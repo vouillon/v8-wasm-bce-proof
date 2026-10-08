@@ -2,3 +2,5 @@
 Graph.v
 Persistence.v
 Loops.v
+Canonical.v
+Induction.v

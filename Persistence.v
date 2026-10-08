@@ -307,3 +307,9 @@ Lemma A_mono :
   forall point succ entry fact (R R' : point -> fact -> Prop) q F,
   (forall p F, R p F -> R' p F) -> A succ entry R q F -> A succ entry R' q F.
 Proof. intros until F. intros HR (p & Hd & H). exists p. auto. Qed.
+
+Arguments last_visit {point succ entry var val def} e p k _ _.
+Arguments persistence {point succ entry var val def} e p t k v _ _ _ _ _ _.
+Arguments exec_reachable {point succ entry var val def} e k _.
+Arguments soundness {point succ entry var val def fact holds leaves}
+  holds_ext {R e} _ _ k F _ _.

@@ -131,3 +131,5 @@ Proof.
 Qed.
 
 End Loops.
+
+Arguments edge_ok {point} succ entry {var val} def {fact} holds R h e pred F.
