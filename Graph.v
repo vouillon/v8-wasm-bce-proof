@@ -165,8 +165,9 @@ Qed.
 
 End Graph.
 
-Arguments path {point}.
-Arguments dom {point}.
-Arguments reachable {point}.
-Arguments path_refl {point succ}.
-Arguments path_step {point succ}.
+
+Arguments path {point} succ _ _ _.
+Arguments dom {point} succ entry d q.
+Arguments reachable {point} succ entry q.
+Arguments path_refl {point succ} x.
+Arguments path_step {point succ} x y z l _ _.

@@ -286,6 +286,24 @@ Proof. intros e p F1 F2 H1 H2 k Hk Hp Hb. auto. Qed.
 
 End Persistence.
 
-Arguments pts {point succ entry var val def}.
-Arguments env {point succ entry var val def}.
-Arguments len {point succ entry var val def}.
+
+Arguments exec {point} succ entry {var} val def.
+Arguments pts {point succ entry var val def} e _.
+Arguments env {point succ entry var val def} e _ _.
+Arguments len {point succ entry var val def} e.
+Arguments leaf_ok {point} succ entry {var} def p v.
+Arguments A {point} succ entry {fact} R q F.
+Arguments leaves_ok {point} succ entry {var} def {fact} leaves R.
+Arguments hyps_before {point} succ entry {var val} def {fact} holds R e k.
+Arguments justified_at {point} succ entry {var val} def {fact} holds R e p F.
+Arguments justified {point} succ entry {var val} def {fact} holds R e.
+
+(** Recording more facts only makes more facts known.  The proof of a
+    rule may need an invariant stronger than the facts that the analysis
+    records (for instance [0 <= i <= x] for a loop phi [i], of which only
+    [0 <= i] is recorded): such "ghost" facts are added to [R], and the
+    theorem then covers the facts actually recorded. *)
+Lemma A_mono :
+  forall point succ entry fact (R R' : point -> fact -> Prop) q F,
+  (forall p F, R p F -> R' p F) -> A succ entry R q F -> A succ entry R' q F.
+Proof. intros until F. intros HR (p & Hd & H). exists p. auto. Qed.

@@ -1,3 +1,4 @@
 -R . BCE
 Graph.v
 Persistence.v
+Loops.v
