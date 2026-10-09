@@ -7,8 +7,13 @@ branch `bce-loop-ideas`, commit `60f7a3c58ab`, whose comments state the
 conditions used here since `a0dc7a91d88`). It covers the
 part of the argument that is not arithmetic: why a fact recorded at a
 program point still holds at the later points where the analysis uses
-it. The arithmetic of each rule is checked separately with Z3 (lemmas in
-the header comments, `check-z3-decisions.py`). Here it stays abstract.
+it. The arithmetic of each rule is checked separately with Z3 (see
+"Z3 checks" below). Here it stays abstract.
+
+This repository also holds the other checks of the analysis that are not
+part of V8: the Z3 scripts (`z3/`), which follow the CL series (branch
+`bce-series`, commit `135eafb4cf9`), and the planted-bug driver
+(`planted-bugs/`), which measures how well V8's random tests find bugs.
 
 Build with `make` (it calls `coq_makefile`). `make assumptions` prints the
 axioms the main theorems depend on. Only the standard library is used.
@@ -298,6 +303,57 @@ alias fact `Fa` has leaves `phi` and the leaves of `ty`, and holds when
   same key have the same full unfolding, up to commutative swaps. The full
   unfolding is a `canon` derivation, so the C++ identification is covered
   by `same_canonical_value`. This argument is not mechanized.
+
+## Z3 checks (`z3/`)
+
+Install the solver with `pip install -r requirements.txt` (in a venv).
+
+- `check-z3-lemmas.py <header>` checks the lemmas written in the comments
+  of `wasm-bounds-check-elimination-reducer.h`: each one must be
+  unsatisfiable, and its assumptions satisfiable.
+- `check-z3-decisions.py <v8 dir> [--from <name>]` checks the code that
+  applies the lemmas. The decision functions of the analysis are
+  transcribed as z3py functions over 32-bit bitvectors. It first checks
+  that the transcribed lines are still in the source (anchors, ignoring
+  whitespace), and stops if one is missing. About 2 minutes. It checks:
+  - **soundness**: from facts that hold and a condition that holds, the
+    facts the code records hold, and a check found redundant cannot fail;
+  - **well-formedness** (W1-W8): whatever the facts, the ranges the code
+    builds are valid and the DCHECKs on values hold. This matters in
+    unreachable code, where facts can contradict each other. W8 models
+    every path by which a length key reaches `MinLength`, including an
+    `ArrayLength` replaced by load elimination with any constant;
+  - **refutations**: counterexamples showing why the code excludes a case
+    (narrowing a negated or signed comparison, a constant length key of
+    2^30 or more in `MinLength`).
+
+  `INVENTORY` counts the `OffsetRange` constructions, the DCHECKs and the
+  calls to `MinLength` and `LengthKey` in the source: when a count
+  changes, the script stops, so that the new use is reviewed. What is
+  outside Z3: the structural DCHECKs (graph shape, processing order,
+  representations), which the random tests exercise.
+
+## Planted bugs (`planted-bugs/`)
+
+`plant-bugs.py [--set loops|persistence|truncation|narrowing|dchecks]
+[names...]` plants bugs in the analysis (one-line edits of the source,
+restored at the end), rebuilds `d8` for each one, and measures how long
+the random loop test (`test/mjsunit/wasm/bounds-check-elimination-loops.js`)
+takes to find it, with the verifier on and 8 workers, and whether
+`bounds-check-elimination.js` finds it. `V8_DIR` (required) is the V8
+checkout, `V8_BUILD_DIR` its build directory (default `out/x64.optdebug`),
+`BUDGET` the seconds of fuzzing per bug (240), and `FUZZ_DIR` where the
+results go (`./plant-bugs-results`). An edit that no longer matches the
+source is reported, and must be updated. The sets:
+
+- `loops`: the loop rules (induction, not-equal bounds, entry lower
+  bounds, length aliases);
+- `persistence`: canonical values, snapshot merges, forms of conditions;
+- `truncation`: truncated 64-bit additions;
+- `narrowing`: narrowed 64-bit comparisons, and the reading of 64-bit
+  values as their truncations;
+- `dchecks`: checks that seem redundant, turned into DCHECKs, to see
+  whether they can fail.
 
 ## What remains open
 

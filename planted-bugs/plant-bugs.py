@@ -1,0 +1,374 @@
+# Plants bugs in the Wasm BCE analysis, one at a time, and measures how
+# long the random loop test takes to find each one (and whether
+# test/mjsunit/wasm/bounds-check-elimination.js finds it). Each bug is a
+# one-line edit of the source, which is restored at the end; d8 is
+# rebuilt for each one, in $V8_BUILD_DIR (default: out/x64.optdebug of
+# $V8_DIR, the V8 checkout, which is required). Results go to
+# $FUZZ_DIR/mutants.json, logs to $FUZZ_DIR/mutant-logs (default:
+# ./plant-bugs-results).
+# Usage: plant-bugs.py [--set loops|persistence|truncation|narrowing|dchecks]
+#                      [names...]
+# The "loops" set (the default) targets the loop reasoning, the
+# "persistence" set what makes facts hold at other program points:
+# canonical values, merges of snapshots, and conditions, and the
+# "truncation" set the decomposition of truncated 64-bit additions
+# (bce-loop-ideas branch), the "narrowing" set the narrowing of 64-bit
+# comparisons and the reading of 64-bit values as their truncations
+# (bce-loop-ideas, 7c94e0ee3b6). The "dchecks" set replaces checks that seem
+# redundant by DCHECKs: one that is "found" is not redundant (the DCHECK
+# fails, in unreachable code with contradictory facts for instance).
+import ctypes, json, multiprocessing, os, random, signal, subprocess, sys, time
+
+# Kills a child process (d8) when its parent (a worker) dies: terminating
+# the pool of workers does not kill their children otherwise, and a d8
+# running a test that does not terminate would then run forever.
+_libc = ctypes.CDLL(None, use_errno=True)
+PR_SET_PDEATHSIG = 1
+
+
+def die_with_parent():
+    _libc.prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
+
+
+# The V8 checkout (or worktree) and its build directory.
+if 'V8_DIR' not in os.environ:
+    sys.exit('V8_DIR must be the V8 checkout (see the comment at the top)')
+V8 = os.environ['V8_DIR']
+OUT = os.environ.get('V8_BUILD_DIR', os.path.join(V8, 'out/x64.optdebug'))
+# The edited files: the .cc file, unless a bug names another one.
+SRC = 'src/compiler/turboshaft/wasm-bounds-check-elimination-reducer.cc'
+HEADER = 'src/compiler/turboshaft/wasm-bounds-check-elimination-reducer.h'
+HERE = os.environ.get('FUZZ_DIR', 'plant-bugs-results')
+LOGS = os.path.join(HERE, 'mutant-logs')
+BUDGET = int(os.environ.get('BUDGET', 240))  # seconds of fuzzing per mutant
+WORKERS = 8
+
+MUTANTS = [
+    # EntryLowerBound: {k <= x} taken as {k < x}.
+    ('entry-strict', '(relation->is_strict() ? 1 : 0)', '1'),
+    # EntryLowerBound: {x} excluded from 0 by a branch, whichever way.
+    ('excluded-no-holds', 'if (holds && CanonicalValue(condition) == x)',
+     'if (CanonicalValue(condition) == x)'),
+    # TryResolveMergeBound: off by one when ruling out phi constants.
+    ('merge-off-by-one', 'if (candidate < bound.x_lower_bound) continue;',
+     'if (candidate <= bound.x_lower_bound) continue;'),
+    # TryMatchInductionVariable: no limit on the step.
+    ('step-limit', '|| step.offset > kMaxArrayLength) {', ') {'),
+    # TryMatchInductionVariable: negative initial values.
+    ('negative-init', '|| static_cast<int32_t>(*init) < 0) {', ') {'),
+    # IsSmallBound: unsigned comparison with {a.length - r}.
+    ('small-bound-unsigned',
+     'return length.has_value() && (is_signed || length->reduction == 0);',
+     'return length.has_value();'),
+    # IsSmallBound: inclusive constant bound treated as strict.
+    ('const-limit', '(inclusive ? 0 : 1)', '1'),
+    # FindNotEqualBound: only {i != x} needed after unrolling.
+    ('unrolled-tests', 'if (candidate.offsets != all_offsets) continue;',
+     'if ((candidate.offsets & 1) == 0 && all_offsets != 0) continue;'),
+    # FindNotEqualBound: {x} not required to be loop-invariant. Possibly
+    # not observable: EntryLowerBound only finds a lower bound for a
+    # constant, or from conditions dominating the loop entry, which cannot
+    # refer to a value computed in the loop (unless it has the same
+    # canonical value as one computed before it, which is then invariant).
+    ('invariant-x',
+     '!Dominates(&graph_.Get(graph_.BlockOf(candidate.x_value)), forward)) {',
+     'false) {'),
+    # RecordLoopBound: offsets 0 to r instead of 0 to r - 1.
+    ('loop-bound-off-by-one',
+     'uint32_t last = length->reduction - 1;\n'
+     '  TRACE("  Loop induction: offsets [0, " << last << "] of " << induction.value',
+     'uint32_t last = length->reduction;\n'
+     '  TRACE("  Loop induction: offsets [0, " << last << "] of " << induction.value'),
+    # ProcessNotEqual: {x + m} not required to be within bounds.
+    ('not-equal-length',
+     'if (!known.has_value() || !known->Contains(last) ||',
+     'if (!known.has_value() ||'),
+    # Control: !(a <s b) taken as (b <s a).
+    ('normalize-signed',
+     'case Kind::kSignedLessThan:\n'
+     '        relation = Relation{Kind::kSignedLessThanOrEqual,',
+     'case Kind::kSignedLessThan:\n'
+     '        relation = Relation{Kind::kSignedLessThan,'),
+]
+
+# Bugs in what makes facts hold at other program points.
+STRUCTURAL_PHI = '''    case Opcode::kPhi: {
+      const PhiOp& phi = op.Cast<PhiOp>();
+      if (phi.input_count != 2) break;
+      key = StructuralKey{op.opcode, 0, 0, CanonicalValue(phi.input(0), depth + 1),
+                          CanonicalValue(phi.input(1), depth + 1)};
+      break;
+    }
+'''
+STRUCTURAL_STRUCT_GET = '''    case Opcode::kStructGet: {
+      const StructGetOp& get = op.Cast<StructGetOp>();
+      key = StructuralKey{op.opcode, static_cast<uint64_t>(get.field_index), 0,
+                          CanonicalValue(get.object(), depth + 1),
+                          OpIndex::Invalid()};
+      break;
+    }
+'''
+STRUCTURAL_ARRAY_GET = '''    case Opcode::kArrayGet: {
+      const ArrayGetOp& get = op.Cast<ArrayGetOp>();
+      key = StructuralKey{op.opcode, 0, 0, CanonicalValue(get.array(), depth + 1),
+                          CanonicalValue(get.index(), depth + 1)};
+      break;
+    }
+'''
+BITCAST = '    case Opcode::kTaggedBitcast: {'
+PERSISTENCE_MUTANTS = [
+    # CanonicalValue: the kind of the operation is ignored.
+    ('binop-kind', 'static_cast<uint64_t>(binop.kind) |', '0 |'),
+    ('shift-kind', 'static_cast<uint64_t>(shift.kind) |', '0 |'),
+    # (In ChangeOptions since 0f9ceaf5935.)
+    ('change-kind', 'return static_cast<uint64_t>(kind) |', 'return 0 |'),
+    # CanonicalValue: {a - b} is {b - a}.
+    ('commutative-all',
+     'if (WordBinopOp::IsCommutative(binop.kind) && right < left) {',
+     'if (right < left) {'),
+    # CanonicalValue: the bitcast of any reference (only observable with
+    # a moving GC).
+    ('bitcast-smi', '!IsKnownSmi(bitcast.input())) {', 'false) {'),
+    # CanonicalValue: phis, loads of struct fields and of array elements
+    # with the same inputs are the same value.
+    ('phi-structural', BITCAST, STRUCTURAL_PHI + BITCAST),
+    ('struct-get-structural', BITCAST, STRUCTURAL_STRUCT_GET + BITCAST),
+    ('array-get-structural', BITCAST, STRUCTURAL_ARRAY_GET + BITCAST),
+    # BeginBlock: a merge keeps the facts of its first predecessor.
+    ('merge-first-pred-bounds',
+     'known_bounds_checks_.StartNewSnapshot(\n      base::VectorOf(predecessor_bounds_check_snapshots_));',
+     'known_bounds_checks_.StartNewSnapshot(\n      predecessor_bounds_check_snapshots_.front());'),
+    ('merge-first-pred-non-negative',
+     'known_non_negative_offsets_.StartNewSnapshot(\n      base::VectorOf(predecessor_non_negative_snapshots_));',
+     'known_non_negative_offsets_.StartNewSnapshot(\n      predecessor_non_negative_snapshots_.front());'),
+    ('merge-first-pred-min-length',
+     'known_min_lengths_.StartNewSnapshot(\n      base::VectorOf(predecessor_min_length_snapshots_));',
+     'known_min_lengths_.StartNewSnapshot(\n      predecessor_min_length_snapshots_.front());'),
+    # BeginBlock: length aliases flow into merges where some predecessor
+    # has none.
+    ('alias-leak', 'if (all_predecessors_have_length_aliases) {',
+     'if (all_predecessors_have_length_aliases ||\n'
+     '        !predecessor_length_alias_snapshots_.empty()) {'),
+    # ForEachCondition: {a & b} not holding shows that neither holds (the
+    # rule for {a & b} holding applies to any operands in bce-series).
+    ('and-not-holds', 'binop->kind == WordBinopOp::Kind::kBitwiseAnd && holds) {',
+     'binop->kind == WordBinopOp::Kind::kBitwiseAnd) {'),
+    # ForEachCondition: {a | b} holding shows that both hold.
+    ('or-holds', 'binop->kind == WordBinopOp::Kind::kBitwiseOr && !holds',
+     'binop->kind == WordBinopOp::Kind::kBitwiseOr'),
+    # ForEachCondition: {a == c} is {!a} for any constant {c}.
+    ('eqz-any', '*constant == 0) {', 'true) {'),
+]
+
+# Bugs in the decomposition of {trunc(x + c)} (DecomposeIndex,
+# ExistingTruncation).
+TRUNCATION_MUTANTS = [
+    # An operation computing {trunc(x)} later in the block is used.
+    ('truncation-same-block',
+     'block == current_block_ ? !(truncation < current_operation_)',
+     'block == current_block_ ? false'),
+    # An operation computing {trunc(x)} in a block that does not
+    # dominate is used.
+    ('truncation-dominance', ': !Dominates(block, current_block_)) {',
+     ': false) {'),
+    # {trunc(x - c)} is {trunc(x) + c}. (Edits for bce-series, where the
+    # truncated addition no longer accepts a constant on the left.)
+    ('truncation-sub-sign',
+     'offset += op->kind == WordBinopOp::Kind::kAdd ? *constant : -*constant;\n'
+     '      index = base;',
+     'offset += *constant;\n      index = base;'),
+    # Any operation with a constant on the right is an addition or a
+    # subtraction.
+    ('truncation-any-op',
+     ' ||\n'
+     '          (op->kind != WordBinopOp::Kind::kAdd &&\n'
+     '           op->kind != WordBinopOp::Kind::kSub)) {\n'
+     '        break;',
+     ') {\n        break;'),
+]
+
+# Bugs in the narrowing of 64-bit comparisons {X < zext(y)} (Normalize)
+# and in the reading of 64-bit values as their truncations
+# (DecomposeIndex, TruncationKey).
+NARROWING_MUTANTS = [
+    # Signed comparisons are narrowed too.
+    ('narrow-signed',
+     'if (relation.kind != Kind::kUnsignedLessThan &&\n'
+     '      relation.kind != Kind::kUnsignedLessThanOrEqual) {',
+     'if (relation.kind == Kind::kEqual) {'),
+    # Any extension on the right side, including a sign extension.
+    ('narrow-any-change', '.TryCast<Opmask::kChangeUint32ToUint64>();',
+     '.TryCast<ChangeOp>();'),
+    # A narrowed comparison eliminates a trap.
+    ('narrowed-trap-eliminated', 'reduction == 0 && !relation->narrowed;',
+     'reduction == 0;'),
+    # The value standing for {trunc(X)} is used as a truncation (and so
+    # as an index, possibly by a guard).
+    ('truncation-placeholder',
+     '  OpIndex canonical = CanonicalValue(x);\n  return values_by_structure_',
+     '  OpIndex canonical = CanonicalValue(x);\n'
+     '  truncations_.emplace(canonical, canonical);\n'
+     '  return values_by_structure_'),
+    # The {wide} flag is not passed for the left side of a narrowed
+    # relation (60f7a3c58ab): the 64-bit value is then read as a 32-bit
+    # base (found by the DCHECKs of DecomposeIndex in debug builds).
+    ('wide-dropped-bounds-check',
+     'ExtractBaseAndOffset(relation.left, relation.narrowed);\n'
+     '  uint32_t reduction',
+     'ExtractBaseAndOffset(relation.left, false);\n  uint32_t reduction'),
+    ('wide-dropped-small-bound',
+     'BaseAndOffset left = ExtractBaseAndOffset(relation.left, relation.narrowed);',
+     'BaseAndOffset left = ExtractBaseAndOffset(relation.left, false);'),
+    ('wide-dropped-non-negative',
+     'BaseAndOffset result = ExtractBaseAndOffset(index, relation.narrowed);',
+     'BaseAndOffset result = ExtractBaseAndOffset(index, false);'),
+    # {trunc(Y - c)} is {trunc(Y) + c}.
+    ('wide-sub-sign',
+     'binop->kind == WordBinopOp::Kind::kAdd ? *constant : -*constant;',
+     '*constant;'),
+]
+
+# Checks that seem redundant, turned into DCHECKs.
+DCHECK_MUTANTS = [
+    ('hull-size', 'if (static_cast<int32_t>(size) < 0) continue;',
+     'DCHECK_GE(static_cast<int32_t>(size), 0);', HEADER),
+    ('extend-down-upper',
+     '      !OffsetRange::IsValidRange(non_negative->lower(), range.lower()) ||\n'
+     '      !OffsetRange::IsValidRange(non_negative->lower(), range.upper())) {\n'
+     '    return std::nullopt;\n'
+     '  }\n',
+     '      !OffsetRange::IsValidRange(non_negative->lower(), range.lower())) {\n'
+     '    return std::nullopt;\n'
+     '  }\n'
+     '  DCHECK(OffsetRange::IsValidRange(non_negative->lower(), range.upper()));\n'),
+    ('invariant-x-dcheck',
+     '    if (!TryExtractI32Const(candidate.x_value).has_value() &&\n'
+     '        !Dominates(&graph_.Get(graph_.BlockOf(candidate.x_value)), forward)) {\n'
+     '      continue;\n'
+     '    }',
+     '    DCHECK(TryExtractI32Const(candidate.x_value).has_value() ||\n'
+     '           Dominates(&graph_.Get(graph_.BlockOf(candidate.x_value)), forward));'),
+]
+
+BCE = ['--turboshaft-wasm-bounds-check-elimination',
+       '--turboshaft-verify-wasm-bounds-check-elimination']
+LOOP = BCE + ['--allow-natives-syntax', '--liftoff', '--no-wasm-lazy-compilation',
+              '--wasm-tiering-budget=1000000000']
+OLD = BCE + ['--no-liftoff', '--no-wasm-lazy-compilation']
+OPTIONAL = ['--no-wasm-loop-unrolling', '--no-wasm-loop-peeling',
+            '--no-turboshaft-wasm-load-elimination']
+
+
+def d8(flags, test, args=(), timeout=300):
+    cmd = [os.path.join(OUT, 'd8'), *flags, 'test/mjsunit/mjsunit.js', test,
+           *(['--', *args] if args else [])]
+    try:
+        r = subprocess.run(cmd, cwd=V8, capture_output=True, timeout=timeout,
+                           stdin=subprocess.DEVNULL, preexec_fn=die_with_parent)
+        return r.returncode, (r.stdout + r.stderr).decode(errors='replace'), cmd
+    except subprocess.TimeoutExpired:
+        return 'timeout', '', cmd
+
+
+def kind(log):
+    if 'wrongly eliminated' in log or 'Fatal' in log or 'Check failed' in log:
+        return 'abort'
+    if 'MjsUnitAssertionError' in log or 'Failure' in log:
+        return 'mismatch'
+    return 'other'
+
+
+def fuzz_one(deadline):
+    random.seed(os.urandom(8))
+    runs = timeouts = 0
+    while time.time() < deadline:
+        seed = random.randrange(1, 2**31)
+        flags = LOOP + [f for f in OPTIONAL if random.random() < 0.3]
+        code, log, cmd = d8(flags, 'test/mjsunit/wasm/bounds-check-elimination-loops.js',
+                            [str(seed), '200'], timeout=120)
+        runs += 1
+        # A timeout is not a detection: the random test itself may loop
+        # (which is a bug of the test, to report).
+        if code == 'timeout':
+            timeouts += 1
+            print(f'TIMEOUT seed {seed} flags {" ".join(flags)}', flush=True)
+            continue
+        if code != 0:
+            return {'seed': seed, 'flags': flags, 'code': code, 'kind': kind(log),
+                    'log': log[-4000:], 'time': time.time(), 'runs': runs,
+                    'timeouts': timeouts}
+    return {'runs': runs, 'timeouts': timeouts}
+
+
+def main():
+    args = sys.argv[1:]
+    mutants = MUTANTS
+    if args[:1] == ['--set']:
+        mutants = {'loops': MUTANTS, 'persistence': PERSISTENCE_MUTANTS,
+                   'truncation': TRUNCATION_MUTANTS,
+                   'narrowing': NARROWING_MUTANTS,
+                   'dchecks': DCHECK_MUTANTS}[args[1]]
+        args = args[2:]
+    names = args or [m[0] for m in mutants]
+    os.makedirs(LOGS, exist_ok=True)
+    originals = {path: open(os.path.join(V8, path)).read()
+                 for path in [SRC, HEADER]}
+    results = []
+    try:
+        for name, old, new, *path in mutants:
+            if name not in names: continue
+            path = path[0] if path else SRC
+            original = originals[path]
+            if original.count(old) != 1:
+                # The source changed: update the edit.
+                print(f'{name}: edit found {original.count(old)} times', flush=True)
+                results.append({'name': name, 'edit': 'not found'})
+                continue
+            open(os.path.join(V8, path), 'w').write(original.replace(old, new))
+            b = subprocess.run(['autoninja', '-C', OUT, 'd8'], cwd=V8,
+                               capture_output=True)
+            # d8 keeps the bug until the next build.
+            open(os.path.join(V8, path), 'w').write(original)
+            if b.returncode != 0:
+                print(f'{name}: build failed', flush=True)
+                results.append({'name': name, 'build': 'failed'})
+                continue
+            code, log, _ = d8(OLD, 'test/mjsunit/wasm/bounds-check-elimination.js',
+                              timeout=900)
+            old_result = 'pass' if code == 0 else kind(log)
+            with open(os.path.join(LOGS, f'{name}-old.log'), 'w') as f: f.write(log[-20000:])
+            start = time.time()
+            with multiprocessing.Pool(WORKERS) as pool:
+                pending = [pool.apply_async(fuzz_one, (start + BUDGET,))
+                           for _ in range(WORKERS)]
+                found, runs, timeouts = None, 0, 0
+                while pending and not found:
+                    time.sleep(1)
+                    for p in [p for p in pending if p.ready()]:
+                        pending.remove(p)
+                        r = p.get()
+                        runs += r['runs']
+                        timeouts += r['timeouts']
+                        if 'seed' in r: found = r
+                pool.terminate()
+            entry = {'name': name, 'old_test': old_result, 'runs': runs}
+            if timeouts: entry['timeouts'] = timeouts
+            if found:
+                entry.update(found=round(found['time'] - start), seed=found['seed'],
+                             kind=found['kind'], code=found['code'],
+                             flags=found['flags'])
+                with open(os.path.join(LOGS, f'{name}-loop.log'), 'w') as f:
+                    f.write(' '.join(found['flags']) + f'\nseed {found["seed"]}\n\n' + found['log'])
+            results.append(entry)
+            print(json.dumps({k: v for k, v in entry.items() if k != 'flags'}), flush=True)
+    finally:
+        for path, original in originals.items():
+            open(os.path.join(V8, path), 'w').write(original)
+        subprocess.run(['autoninja', '-C', OUT, 'd8'], cwd=V8, capture_output=True)
+        os.makedirs(HERE, exist_ok=True)
+        with open(os.path.join(HERE, 'mutants.json'), 'w') as f:
+            json.dump(results, f, indent=1)
+
+
+if __name__ == '__main__':
+    main()

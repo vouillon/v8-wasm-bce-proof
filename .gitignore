@@ -9,3 +9,5 @@ Makefile.coq
 Makefile.coq.conf
 .lia.cache
 .nia.cache
+__pycache__/
+plant-bugs-results/
