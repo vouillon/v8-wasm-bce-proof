@@ -3,7 +3,8 @@
 This is a Rocq (Coq 8.20) formalization of the soundness argument of the
 analysis in V8's Turboshaft Wasm bounds check elimination
 (`src/compiler/turboshaft/wasm-bounds-check-elimination-reducer.{h,cc}`,
-branch `bounds-check-elimination`, commit `b02d02c359a`). It covers the
+branch `bce-loop-ideas`, commit `60f7a3c58ab`, whose comments state the
+conditions used here since `a0dc7a91d88`). It covers the
 part of the argument that is not arithmetic: why a fact recorded at a
 program point still holds at the later points where the analysis uses
 it. The arithmetic of each rule is checked separately with Z3 (lemmas in
@@ -72,7 +73,8 @@ leaves (`holds_ext`).
 - `A q F := exists p, dom p q /\ R p F`: the facts known at `q`. This
   models the snapshot tables: `BeginBlock` starts a block from the common
   ancestor of the predecessors' snapshots, which is the snapshot of a
-  dominator (see "Findings", item 6 for loop headers).
+  dominator (for a loop header, because it dominates its back edge: see
+  the comment in `BeginBlock`).
 - Leaves condition (`leaf_ok p v := ~ (dom p (def v) /\ def v <> p)`): no
   leaf of a fact recorded at `p` is defined at a point that `p` strictly
   dominates. `leaves_ok` requires this for every fact recorded at a
@@ -140,9 +142,11 @@ Supporting results:
   This covers facts recorded earlier in the same block, as the C++ does
   when it processes a block's operations in order.
 - `justified_at_seq`: the facts recorded at one point can be justified in
-  sequence (see "Findings", item 3).
-- `A_mono`: adding (ghost) facts to `R` only adds known facts (see
-  "Findings", item 2).
+  sequence: later phis of a loop header use facts recorded for earlier
+  ones (see the comment of `ProcessLoopHeader`).
+- `A_mono`: adding (ghost) facts to `R` only adds known facts, such as
+  induction invariants stronger than the facts the analysis records (see
+  the comment of `ProcessLoopHeader`).
 
 ### Milestone 2: loop headers (`Loops.v`, `Induction.v`)
 
@@ -259,8 +263,7 @@ alias fact `Fa` has leaves `phi` and the leaves of `ty`, and holds when
   tables, `OffsetRange` hulls or `ForEachCondition`. The tables are
   modeled by `A` (facts recorded at dominators). It is assumed, not proved
   from the code, that the facts the analysis uses at a point are among
-  those recorded at its dominators. The `BeginBlock` comment argues this
-  (see "Findings", item 6).
+  those recorded at its dominators. The `BeginBlock` comment argues this.
 - **Semantics are abstract.** Nothing constrains the values written,
   except for pure operations (`pure_sem`) and, where needed, phis
   (`phi_sem` in `Induction.v` and `Alias.v`). The justification of a
