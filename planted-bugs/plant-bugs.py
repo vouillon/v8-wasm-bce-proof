@@ -211,8 +211,9 @@ NARROWING_MUTANTS = [
     # base (found by the DCHECKs of DecomposeIndex in debug builds).
     ('wide-dropped-bounds-check',
      'ExtractBaseAndOffset(relation.left, relation.narrowed);\n'
-     '  uint32_t reduction',
-     'ExtractBaseAndOffset(relation.left, false);\n  uint32_t reduction'),
+     '  OpIndex base = decomposed.base;',
+     'ExtractBaseAndOffset(relation.left, false);\n'
+     '  OpIndex base = decomposed.base;'),
     ('wide-dropped-small-bound',
      'BaseAndOffset left = ExtractBaseAndOffset(relation.left, relation.narrowed);',
      'BaseAndOffset left = ExtractBaseAndOffset(relation.left, false);'),
@@ -225,8 +226,8 @@ NARROWING_MUTANTS = [
      '*constant;'),
 ]
 
-# Bugs in the guards of fallback sequences (bce-series-v2: built from the
-# index of the sequence's first trap, see GuardIndex).
+# Bugs in the guards of fallback sequences (bce-series-v3: built from the
+# index and the length of the sequence's first trap, see GuardIndex).
 GUARD_MUTANTS = [
     # The guard ignores the offset of the index it is built from.
     ('guard-index-delta', 'uint32_t delta = offset - seq.index_offset();',
@@ -242,6 +243,10 @@ GUARD_MUTANTS = [
     ('coalesce-keeps-index',
      '      index_ = other.index_;\n      index_offset_ = other.index_offset_;\n',
      '', HEADER),
+    # ... or the length of the later trap, which may be computed after the
+    # guard.
+    ('coalesce-keeps-length',
+     '      array_length_ = other.array_length_;\n', '', HEADER),
 ]
 
 # Checks that seem redundant, turned into DCHECKs.

@@ -12,7 +12,7 @@ it. The arithmetic of each rule is checked separately with Z3 (see
 
 This repository also holds the other checks of the analysis that are not
 part of V8: the Z3 scripts (`z3/`), which follow the CL series (branch
-`bce-series-v2`, commit `4469b61564f`), the planted-bug driver
+`bce-series-v3`, commit `e5eb75d2633`), the planted-bug driver
 (`planted-bugs/`), which measures how well V8's random tests find bugs,
 and a probe of the pipeline (`probes/`).
 
@@ -357,19 +357,25 @@ source is reported, and must be updated. The sets:
 - `truncation`: truncated 64-bit additions;
 - `narrowing`: narrowed 64-bit comparisons, and the reading of 64-bit
   values as their truncations;
-- `guards`: the guards of fallback sequences (`GuardIndex`, and the index
-  moved by `Coalesce`);
+- `guards`: the guards of fallback sequences (`GuardIndex`, and the index and
+  length moved by `Coalesce`);
 - `dchecks`: checks that seem redundant, turned into DCHECKs, to see
   whether they can fail.
 
-Results on the CL series (`bce-series-v2`, `4469b61564f`), October 2026:
-38 of the 41 planted bugs are found within 4 minutes (8 workers), most
-within seconds. The others: `invariant-x` and `narrowed-trap-eliminated`
-seem unobservable (a check implied by others, and a narrowed relation that
-can never be the condition of an array bounds check), and `bitcast-smi`
-does not build (and would need a moving GC). The `dchecks` set showed that
-the three checks that hold when facts hold are still needed in unreachable
-code, where facts may contradict each other.
+Results on the CL series (`bce-series-v3`, `e5eb75d2633`), October 2026:
+39 of the 42 planted bugs are found, most within seconds (8 workers). Three
+of them (`wide-sub-sign`, `narrow-any-change`, `coalesce-keeps-offset`)
+take minutes, and may or may not be found within the default 4-minute
+budget: they were found on v2 within it, missed on a first v3 run, and
+found in 1 to 5 minutes in a second run with `BUDGET=900`. Removing the
+shape added in v3 (`truncatedLengthStatements`) did not make them easier
+to find, so this is variance, not a regression. The others: `invariant-x`
+and `narrowed-trap-eliminated` seem unobservable (a check implied by
+others, and a narrowed relation that can never be the condition of an
+array bounds check), and `bitcast-smi` does not build (and would need a
+moving GC). The `dchecks` set (run on v2) showed that the three checks
+that hold when facts hold are still needed in unreachable code, where
+facts may contradict each other.
 
 ## Probes (`probes/`)
 

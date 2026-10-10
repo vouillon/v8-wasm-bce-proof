@@ -1,7 +1,7 @@
 # Usage: check-z3-decisions.py <v8 dir> [--from <name>]
 # With --from, the queries before the first one whose name contains
 # <name> are skipped. The whole check takes about 2 minutes. The anchors
-# are those of the CL series (branch bce-series-v2, head 4469b61564f), which
+# are those of the CL series (branch bce-series-v3, head e5eb75d2633), which
 # differs from the bce-loop-ideas prototype in a few places (MinLength's
 # DCHECK, no constant on the left of 32-bit or truncated additions).
 #
@@ -83,7 +83,7 @@ ANCHORS = {
         'if (!known.has_value() || !known->Contains(last) || '
         'known->Contains(last + 1)) {',
         'ProcessBoundsCheck(OpIndex::Invalid(), BoundsCheck(key, last + 1), '
-        'OpIndex::Invalid(), array_length->length, 0);',
+        'OpIndex::Invalid(), OpIndex::Invalid(), 0);',
         # ProcessBoundsCheck
         'uint32_t last = offset + reduction;',
         'if (!key.base.valid() && !(OffsetRange::IsValidRange(0, offset) && '
@@ -185,7 +185,8 @@ ANCHORS = {
         'relation.kind != Kind::kUnsignedLessThanOrEqual) { return std::nullopt;',
         '.TryCast<Opmask::kChangeUint32ToUint64>(); '
         'if (zext == nullptr) return std::nullopt;',
-        'return Relation{relation.kind, false, relation.left, zext->input(), true};',
+        'return Relation{relation.kind, /*not_equal=*/false, relation.left, '
+        'zext->input(), /*narrowed=*/true};',
         'reduction == 0 && !relation->narrowed;',
         # DecomposeIndex: 64-bit values read as their truncations.
         'change && (change->Is<Opmask::kChangeUint32ToUint64>() || '
@@ -960,10 +961,10 @@ INVENTORY_PATTERNS = {
     'LengthKey calls': r'(?<![A-Za-z:])LengthKey\(',
 }
 INVENTORY = {
-    'h': {'OffsetRange': 7, 'DCHECK': 10, 'MinLength calls': 1,
+    'h': {'OffsetRange': 7, 'DCHECK': 11, 'MinLength calls': 1,
           'LengthKey calls': 1},
-    'cc': {'OffsetRange': 11, 'DCHECK': 16, 'MinLength calls': 6,
-           'LengthKey calls': 7},
+    'cc': {'OffsetRange': 11, 'DCHECK': 17, 'MinLength calls': 6,
+           'LengthKey calls': 8},
 }
 
 
