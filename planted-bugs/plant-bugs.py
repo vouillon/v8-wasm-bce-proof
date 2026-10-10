@@ -8,6 +8,8 @@
 # ./plant-bugs-results).
 # Usage: plant-bugs.py [--set loops|persistence|truncation|narrowing|dchecks]
 #                      [names...]
+# Without --set, named bugs are looked up in all the sets, and with no
+# names, the loops set runs.
 # The "loops" set (the default) targets the loop reasoning, the
 # "persistence" set what makes facts hold at other program points:
 # canonical values, merges of snapshots, and conditions, and the
@@ -302,14 +304,21 @@ def fuzz_one(deadline):
 
 def main():
     args = sys.argv[1:]
-    mutants = MUTANTS
+    sets = {'loops': MUTANTS, 'persistence': PERSISTENCE_MUTANTS,
+            'truncation': TRUNCATION_MUTANTS, 'narrowing': NARROWING_MUTANTS,
+            'dchecks': DCHECK_MUTANTS}
     if args[:1] == ['--set']:
-        mutants = {'loops': MUTANTS, 'persistence': PERSISTENCE_MUTANTS,
-                   'truncation': TRUNCATION_MUTANTS,
-                   'narrowing': NARROWING_MUTANTS,
-                   'dchecks': DCHECK_MUTANTS}[args[1]]
+        mutants = sets[args[1]]
         args = args[2:]
+    elif args:
+        # Bugs named without a set are looked up in all the sets.
+        mutants = [m for ms in sets.values() for m in ms]
+    else:
+        mutants = MUTANTS
     names = args or [m[0] for m in mutants]
+    unknown = set(names) - {m[0] for m in mutants}
+    if unknown:
+        sys.exit(f'unknown bugs: {" ".join(sorted(unknown))}')
     os.makedirs(LOGS, exist_ok=True)
     originals = {path: open(os.path.join(V8, path)).read()
                  for path in [SRC, HEADER]}

@@ -12,8 +12,9 @@ it. The arithmetic of each rule is checked separately with Z3 (see
 
 This repository also holds the other checks of the analysis that are not
 part of V8: the Z3 scripts (`z3/`), which follow the CL series (branch
-`bce-series`, commit `135eafb4cf9`), and the planted-bug driver
-(`planted-bugs/`), which measures how well V8's random tests find bugs.
+`bce-series`, commit `135eafb4cf9`), the planted-bug driver
+(`planted-bugs/`), which measures how well V8's random tests find bugs,
+and a probe of the pipeline (`probes/`).
 
 Build with `make` (it calls `coq_makefile`). `make assumptions` prints the
 axioms the main theorems depend on. Only the standard library is used.
@@ -354,6 +355,17 @@ source is reported, and must be updated. The sets:
   values as their truncations;
 - `dchecks`: checks that seem redundant, turned into DCHECKs, to see
   whether they can fail.
+
+## Probes (`probes/`)
+
+`check-normalization.py <v8 dir> [<d8>]` checks that the default
+pipeline moves constants to the right of additions before the analysis,
+which only reads `x + c` (the CL series dropped `c + x`). After `a[i]`, the
+check of `a[1 + i]` must be recognized like `a[i + 1]`. The normalization
+comes from loop peeling, so with `--no-wasm-loop-peeling` the analysis
+loses precision on `c + x` (reported for information). It needs a debug
+or optdebug `d8`, for the trace flag. No V8 test can check this: the unit
+tests do not run the pipeline, and mjsunit tests only see results.
 
 ## What remains open
 
