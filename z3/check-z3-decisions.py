@@ -1,7 +1,7 @@
 # Usage: check-z3-decisions.py <v8 dir> [--from <name>]
 # With --from, the queries before the first one whose name contains
 # <name> are skipped. The whole check takes about 2 minutes. The anchors
-# are those of the CL series (branch bce-series, head 135eafb4cf9), which
+# are those of the CL series (branch bce-series-v2, head 4469b61564f), which
 # differs from the bce-loop-ideas prototype in a few places (MinLength's
 # DCHECK, no constant on the left of 32-bit or truncated additions).
 #
@@ -83,7 +83,7 @@ ANCHORS = {
         'if (!known.has_value() || !known->Contains(last) || '
         'known->Contains(last + 1)) {',
         'ProcessBoundsCheck(OpIndex::Invalid(), BoundsCheck(key, last + 1), '
-        'base_value, array_length->length, 0);',
+        'OpIndex::Invalid(), array_length->length, 0);',
         # ProcessBoundsCheck
         'uint32_t last = offset + reduction;',
         'if (!key.base.valid() && !(OffsetRange::IsValidRange(0, offset) && '
@@ -163,12 +163,15 @@ ANCHORS = {
         'uint32_t decrement = 0u - step.offset;',
         'if (step.base != value || decrement == 0 || '
         'decrement > kMaxArrayLength) {',
-        'if (!init_lower.has_value() || *init_lower < 0) return;',
+        # (The entry lower bound is computed lazily since bce-series-v2.)
+        'std::optional<int64_t> lower = init_lower(); '
+        'if (!lower.has_value() || *lower < 0) return;',
         'uint32_t v = k - n; if (v <= kMaxInt) excluded.push_back(v);',
         'if (d > 0 || d < -int64_t{kMaxArrayLength}) continue;',
         'int64_t lower = static_cast<int32_t>(*lo) + '
         '(relation.is_strict() ? 1 : 0); if (lower - d >= decrement) return true;',
-        'if (y > init_lower) continue;',
+        'std::optional<int64_t> lower = init_lower(); '
+        'if (!lower.has_value() || y > *lower) continue;',
         # EntryLowerBoundOfStart.
         'if (bound >= 0 && (!lower.has_value() || bound > *lower)) lower = bound;',
         'raise(int64_t{MinLength(LengthKey(length->length))} - length->reduction);',
@@ -837,6 +840,20 @@ def check_well_formedness():
           [known.present, valid_range(known.lo, known.hi), Or(above, below)],
           Not(h2.present))
     check_min_length_keys()
+    # CanCoalesce: DCHECK(merged_offsets.has_value()). Within a block, the
+    # offsets of each sequence of a key are within the known range of the
+    # key, which only grows ([range-containment]: it is only replaced by
+    # its hull with a checked range, when that hull exists, and sequences
+    # are recorded after it is computed; loop headers set it before any
+    # trap). This holds whatever the facts. So both sequences are within
+    # one valid range, and their hull exists.
+    k, a, b = Opt.sym('k'), Opt.sym('a'), Opt.sym('b')
+    within = lambda r: And(contains(k, r.lo), contains(k, r.hi))
+    prove('W9 CanCoalesce: two sequences of a key have a hull',
+          [k.present, a.present, b.present, valid_range(k.lo, k.hi),
+           valid_range(a.lo, a.hi), valid_range(b.lo, b.hi),
+           within(a), within(b)],
+          Not(hull(a, b).present))
 
 
 # The length keys passed to MinLength. Each one is LengthKey(r.length),
@@ -931,7 +948,10 @@ def check_min_length_keys():
 # MinLength and LengthKey (see check_min_length_keys). When a count
 # changes, check that the queries cover the new uses (and update it).
 # 60f7a3c58ab added two DCHECKs on the representation of the values
-# DecomposeIndex reads (structural, no query needed). The .h counts are
+# DecomposeIndex reads (structural, no query needed). bce-series-v2
+# removed two DCHECKs on base values, and added one on the representation
+# of a trap's index and one in the cast case of CanonicalValue
+# (structural), and one in CanCoalesce (W9). The .h counts of calls are
 # declarations.
 INVENTORY_PATTERNS = {
     'OffsetRange': r'OffsetRange[ (]',
@@ -940,9 +960,9 @@ INVENTORY_PATTERNS = {
     'LengthKey calls': r'(?<![A-Za-z:])LengthKey\(',
 }
 INVENTORY = {
-    'h': {'OffsetRange': 7, 'DCHECK': 11, 'MinLength calls': 1,
+    'h': {'OffsetRange': 7, 'DCHECK': 10, 'MinLength calls': 1,
           'LengthKey calls': 1},
-    'cc': {'OffsetRange': 11, 'DCHECK': 14, 'MinLength calls': 6,
+    'cc': {'OffsetRange': 11, 'DCHECK': 16, 'MinLength calls': 6,
            'LengthKey calls': 7},
 }
 

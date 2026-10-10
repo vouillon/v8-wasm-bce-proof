@@ -12,7 +12,7 @@ it. The arithmetic of each rule is checked separately with Z3 (see
 
 This repository also holds the other checks of the analysis that are not
 part of V8: the Z3 scripts (`z3/`), which follow the CL series (branch
-`bce-series`, commit `135eafb4cf9`), the planted-bug driver
+`bce-series-v2`, commit `4469b61564f`), the planted-bug driver
 (`planted-bugs/`), which measures how well V8's random tests find bugs,
 and a probe of the pipeline (`probes/`).
 
@@ -328,6 +328,10 @@ Install the solver with `pip install -r requirements.txt` (in a venv).
     (narrowing a negated or signed comparison, a constant length key of
     2^30 or more in `MinLength`).
 
+  W9 covers the DCHECK in `CanCoalesce`: within a block, the offsets of
+  each sequence are within the known range of its key, which only grows,
+  so two sequences always have a hull.
+
   `INVENTORY` counts the `OffsetRange` constructions, the DCHECKs and the
   calls to `MinLength` and `LengthKey` in the source: when a count
   changes, the script stops, so that the new use is reviewed. What is
@@ -336,7 +340,7 @@ Install the solver with `pip install -r requirements.txt` (in a venv).
 
 ## Planted bugs (`planted-bugs/`)
 
-`plant-bugs.py [--set loops|persistence|truncation|narrowing|dchecks]
+`plant-bugs.py [--set loops|persistence|truncation|narrowing|guards|dchecks]
 [names...]` plants bugs in the analysis (one-line edits of the source,
 restored at the end), rebuilds `d8` for each one, and measures how long
 the random loop test (`test/mjsunit/wasm/bounds-check-elimination-loops.js`)
@@ -353,18 +357,18 @@ source is reported, and must be updated. The sets:
 - `truncation`: truncated 64-bit additions;
 - `narrowing`: narrowed 64-bit comparisons, and the reading of 64-bit
   values as their truncations;
+- `guards`: the guards of fallback sequences (`GuardIndex`, and the index
+  moved by `Coalesce`);
 - `dchecks`: checks that seem redundant, turned into DCHECKs, to see
   whether they can fail.
 
-Results on the CL series (`135eafb4cf9`, with the test change
-`353b5892256`), October 2026: all the planted bugs that build are found,
-most within seconds, the rarest (`const-limit`, `narrow-any-change`,
-`excluded-no-holds`, `small-bound-unsigned`) within about 8 minutes,
-except `invariant-x` and `narrowed-trap-eliminated`, which seem
-unobservable (a check implied by others, and a narrowed relation that
-can never be the condition of an array bounds check). `bitcast-smi` does
-not build (and would need a moving GC). The `dchecks` set showed that the
-three checks that hold when facts hold are still needed in unreachable
+Results on the CL series (`bce-series-v2`, `4469b61564f`), October 2026:
+38 of the 41 planted bugs are found within 4 minutes (8 workers), most
+within seconds. The others: `invariant-x` and `narrowed-trap-eliminated`
+seem unobservable (a check implied by others, and a narrowed relation that
+can never be the condition of an array bounds check), and `bitcast-smi`
+does not build (and would need a moving GC). The `dchecks` set showed that
+the three checks that hold when facts hold are still needed in unreachable
 code, where facts may contradict each other.
 
 ## Probes (`probes/`)

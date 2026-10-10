@@ -6,7 +6,7 @@
 # $V8_DIR, the V8 checkout, which is required). Results go to
 # $FUZZ_DIR/mutants.json, logs to $FUZZ_DIR/mutant-logs (default:
 # ./plant-bugs-results).
-# Usage: plant-bugs.py [--set loops|persistence|truncation|narrowing|dchecks]
+# Usage: plant-bugs.py [--set loops|persistence|truncation|narrowing|guards|dchecks]
 #                      [names...]
 # Without --set, named bugs are looked up in all the sets, and with no
 # names, the loops set runs.
@@ -165,14 +165,9 @@ PERSISTENCE_MUTANTS = [
 # Bugs in the decomposition of {trunc(x + c)} (DecomposeIndex,
 # ExistingTruncation).
 TRUNCATION_MUTANTS = [
-    # An operation computing {trunc(x)} later in the block is used.
-    ('truncation-same-block',
-     'block == current_block_ ? !(truncation < current_operation_)',
-     'block == current_block_ ? false'),
-    # An operation computing {trunc(x)} in a block that does not
-    # dominate is used.
-    ('truncation-dominance', ': !Dominates(block, current_block_)) {',
-     ': false) {'),
+    # (truncation-same-block and truncation-dominance targeted the
+    # dominance filter of ExistingTruncation, which bce-series-v2 removed:
+    # guards no longer use truncations, see GUARD_MUTANTS.)
     # {trunc(x - c)} is {trunc(x) + c}. (Edits for bce-series, where the
     # truncated addition no longer accepts a constant on the left.)
     ('truncation-sub-sign',
@@ -228,6 +223,25 @@ NARROWING_MUTANTS = [
     ('wide-sub-sign',
      'binop->kind == WordBinopOp::Kind::kAdd ? *constant : -*constant;',
      '*constant;'),
+]
+
+# Bugs in the guards of fallback sequences (bce-series-v2: built from the
+# index of the sequence's first trap, see GuardIndex).
+GUARD_MUTANTS = [
+    # The guard ignores the offset of the index it is built from.
+    ('guard-index-delta', 'uint32_t delta = offset - seq.index_offset();',
+     'uint32_t delta = offset;', HEADER),
+    ('guard-delta-sign', 'uint32_t delta = offset - seq.index_offset();',
+     'uint32_t delta = seq.index_offset() - offset;', HEADER),
+    # When coalescing moves the guard earlier, it keeps the offset of the
+    # later index.
+    ('coalesce-keeps-offset',
+     '      index_ = other.index_;\n      index_offset_ = other.index_offset_;\n',
+     '      index_ = other.index_;\n', HEADER),
+    # ... or the later index itself, computed after the guard.
+    ('coalesce-keeps-index',
+     '      index_ = other.index_;\n      index_offset_ = other.index_offset_;\n',
+     '', HEADER),
 ]
 
 # Checks that seem redundant, turned into DCHECKs.
@@ -306,7 +320,7 @@ def main():
     args = sys.argv[1:]
     sets = {'loops': MUTANTS, 'persistence': PERSISTENCE_MUTANTS,
             'truncation': TRUNCATION_MUTANTS, 'narrowing': NARROWING_MUTANTS,
-            'dchecks': DCHECK_MUTANTS}
+            'guards': GUARD_MUTANTS, 'dchecks': DCHECK_MUTANTS}
     if args[:1] == ['--set']:
         mutants = sets[args[1]]
         args = args[2:]
