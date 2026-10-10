@@ -356,6 +356,17 @@ source is reported, and must be updated. The sets:
 - `dchecks`: checks that seem redundant, turned into DCHECKs, to see
   whether they can fail.
 
+Results on the CL series (`135eafb4cf9`, with the test change
+`353b5892256`), October 2026: all the planted bugs that build are found,
+most within seconds, the rarest (`const-limit`, `narrow-any-change`,
+`excluded-no-holds`, `small-bound-unsigned`) within about 8 minutes,
+except `invariant-x` and `narrowed-trap-eliminated`, which seem
+unobservable (a check implied by others, and a narrowed relation that
+can never be the condition of an array bounds check). `bitcast-smi` does
+not build (and would need a moving GC). The `dchecks` set showed that the
+three checks that hold when facts hold are still needed in unreachable
+code, where facts may contradict each other.
+
 ## Probes (`probes/`)
 
 `check-normalization.py <v8 dir> [<d8>]` checks that the default
