@@ -4,4 +4,5 @@ Persistence.v
 Loops.v
 Canonical.v
 Induction.v
+Representatives.v
 Alias.v

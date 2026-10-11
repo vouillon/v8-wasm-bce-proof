@@ -29,6 +29,7 @@ names, quoted comments) is still in the source, at the commit above.
 | `Loops.v` | Milestone 2: facts recorded at loop headers (per-edge obligations) |
 | `Canonical.v` | Milestone 3: pure operations, canonical terms, the GVN invariant, facts over terms |
 | `Induction.v` | Milestones 2 and 3 together: induction on a loop phi with per-edge phi semantics |
+| `Representatives.v` | Milestone 3, refined: the representatives of `CanonicalValue`, the depth limit, truncation keys |
 | `Alias.v` | Milestone 4: length aliases (`TryResolveMergeBound`) |
 | `Assumptions.v` | `Print Assumptions` of the main theorems (not part of `make all`) |
 
@@ -235,6 +236,52 @@ Milestone 1 with `p := def x`.
   condition on any SSA values at the current point with these canonical
   terms. This instantiates Milestone 1.
 
+### Milestone 3, refined: representatives (`Representatives.v`)
+
+`CanonicalValue` does not build terms: it identifies values through
+representatives, the first operation found with a given structural key
+(`values_by_structure_`). The model:
+
+- `CV x r`: the analysis may give `x` the canonical value `r`. The
+  value itself (phis, loads, parameters, operations beyond the depth
+  limit, which are not memoized), the canonical value of the input of an
+  identity, or the representative of the structural key, with the
+  inputs of commutative operations sorted.
+- `vbs`: the final table `values_by_structure_`, a function, so one
+  representative per key. Its properties are hypotheses, which the code
+  maintains:
+  - `vbs_ok`: a representative computed its own key from the canonical
+    values of its inputs, or is the 64-bit canonical value `cX` that
+    `TruncationKey` registers for the key of `trunc(cX)`;
+  - `vbs_inj`: a value represents at most one key per output
+    representation (its own key, computed once since it is memoized, and,
+    for a 64-bit value, the key of its truncation);
+  - `op_wf`: operations are acyclic (phis are not operations);
+  - `op_rep`: the opcode and options of an operation (the first
+    component of its key) give the representations of its output and
+    inputs.
+- `U rho r t`: the representative `r`, in a position of representation
+  `rho`, stands for the term `t`. That is the term of its key, `Leaf r`
+  if it represents no key of that representation, and `trunc` of what it
+  stands for in 64 bits if it is `cX` in a 32-bit position.
+
+```coq
+Theorem representatives_sound : forall x, P x.
+  (* CV x r -> (exists t, U (rp x) r t) /\ (forall t, U (rp x) r t -> canon x t) *)
+Theorem same_representative :
+  forall x x' r k, CV x r -> CV x' r -> rp x = rp x' -> k <= len e ->
+  dom (def x) (pts e k) -> dom (def x') (pts e k) -> env e k x = env e k x'.
+```
+
+Any unfolding of a representative is a canonical term (`canon`) of every
+value of that representation with that canonical value. So a fact
+recorded about representatives, as a fact over their unfoldings, is a
+fact over canonical terms (Milestone 3). Two values with the same
+canonical value and representation are equal wherever both are used.
+`existing_truncation`: the base found by `ExistingTruncation`, possibly
+computed in another branch, stands for the truncation of the 64-bit
+value of the index, which dominates the access.
+
 ### Milestone 4: length aliases (`Alias.v`)
 
 The setting is a merge `m` (not a loop header) with a phi `phi`. `m`
@@ -277,6 +324,7 @@ alias fact `Fa` has leaves `phi` and the leaves of `ty`, and holds when
 | `R h Fa` | `TryResolveMergeBound` (`known_length_aliases_.Set`) |
 | ghost facts in `R` | raw branch conditions collected by `ForEachDominatingCondition` (`ProcessLoopHeader`, `EntryLowerBound`); induction invariants such as `i <= x` |
 | `canon x t`, `term` | `CanonicalValue` (`values_by_structure_`), `ResolveReplacements`, `ResolveAliases` |
+| `CV`, `vbs`, `U` | `CanonicalValue`, `values_by_structure_`, `TruncationKey`; `existing_truncation`: `ExistingTruncation` |
 | `ident` operations | `WasmTypeCast`, `AssertNotNull`, `WasmTypeAnnotation`, load-elimination replacements |
 | pure operations | `WordBinop`, `Shift`, `Change`, `Constant`, `ArrayLength`, `TaggedBitcast` of Smis |
 | `edge_ok`, `phi_fact_justified` | the induction arguments in the comments of `ProcessLoopHeader` and `ProcessDecreasingInduction` |
@@ -334,39 +382,21 @@ alias fact `Fa` has leaves `phi` and the leaves of `ty`, and holds when
   instructions, `in_fallback_code_`, each sequence emitted once) is
   argued in the comments of the reducer, and exercised by the random
   tests.
-- **Representatives and the depth limit.** `CanonicalValue` identifies
-  values through representatives (the first operation with a given
-  structural key) and stops at depth 16. The model uses terms instead. The
-  link: an `OpIndex` that appears as a cut-off leaf in a key is an input,
-  so it dominates the point where the key is computed. There its value is
-  that of its own structure (`canon_sound`). So a key denotes the same
-  fully unfolded term wherever it is computed, and two operations with the
-  same key have the same full unfolding, up to commutative swaps. The full
-  unfolding is a `canon` derivation, so the C++ identification is covered
-  by `same_canonical_value`. Two cases need more care:
-  - **Truncation keys.** When no truncation of a 64-bit value `X` has
-    been seen, `TruncationKey` makes the canonical value `cX` of `X` the
-    representative of the key of `trunc(X)`. The same `OpIndex` then
-    denotes `X` in some keys and `trunc(X)` in others, so an `OpIndex`
-    alone does not determine a term. What does is the `OpIndex` and the
-    representation of its position: the options of each structural key
-    give the representations of its inputs (`WordBinop` and `Shift` their
-    `rep`, the right side of a shift being 32-bit, `Change` and
-    `TaggedBitcast` their source representation), and the keys of facts
-    (bases, lengths, aliases) are 32-bit values. A 64-bit `OpIndex` in a
-    32-bit position can only come from `TruncationKey`, and then denotes
-    `trunc(X)` for the unique `X` whose canonical value it is. The
-    argument above holds with terms indexed by representation.
-  - **Existing truncations.** The base found by `ExistingTruncation` (in
-    `DecomposeIndex`) may be computed in another branch, so it does not
-    dominate the point where it is used. It is a truncation of a value
-    with the same canonical value, so the same term, as the 64-bit input
-    of the index, which dominates the use. It is only used through its
-    canonical value, and decomposed through the structure of its input,
-    which unfolds that term: the term's leaves dominate the use, as
-    `canon` requires. The `OpIndex` itself is only a name.
+- **Representatives and the depth limit** are modeled in
+  `Representatives.v`. What remains is the link between the hypotheses
+  on the table (`vbs_ok`, `vbs_inj`) and the code of `CanonicalValue` and
+  `TruncationKey`. These hypotheses rely on the following:
+  - a value is registered under the key it computes from its inputs, or,
+    for a 64-bit canonical value, under the key of its truncation;
+  - a value's key is computed once (memoized);
+  - the options of each structural key give the representations of its
+    inputs (`WordBinop` and `Shift` their `rep`, the right side of a shift
+    being 32-bit, `Change` and `TaggedBitcast` their source
+    representation).
 
-  This argument is not mechanized.
+  `existing_truncation` covers one step of `DecomposeIndex` through an
+  existing truncation. Its chain of decompositions applies it at each
+  step.
 
 ## Z3 checks (`z3/`)
 
@@ -487,8 +517,8 @@ tests do not run the pipeline, and mjsunit tests only see results.
   concrete.
 - **Model trap and branch semantics.** That would discharge the
   justification of condition facts.
-- **Mechanize the representative / depth-limit argument** (see above),
-  including truncation keys.
+- **Derive the hypotheses on representatives** (`vbs_ok`, `vbs_inj`) from
+  a model of the code of `CanonicalValue` and `TruncationKey`.
 - **Model the transformation.** Trap removal and the emission of fallback
   sequences, with a simulation argument (their invariant and guards are
   checked with Z3).
