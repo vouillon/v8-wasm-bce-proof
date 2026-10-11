@@ -219,6 +219,12 @@ Milestone 1 with `p := def x`.
   before `k`, where `p` dominates `pts k`. A variable used at `pts k` with
   the same canonical term as a variable used at `p` has the value that
   variable had at `t0`.
+- `guard_value_persists`: the guard of a fallback sequence, at its start
+  `p`, reads the base of the key through the index of the first trap,
+  defined before `p`. At each covered trap, later in the block, the base
+  has the same value. With `same_canonical_value` for the length, this is
+  why the guard checks the indices of the covered traps (the arithmetic
+  is in `check_fallback_sequences`, see "Z3 checks").
 - `record_ssa_fact`: a condition on SSA values at the current point is a
   fact over their canonical terms.
 - `ssa_fact_leaves_ok`: such a fact satisfies the leaves condition.
@@ -273,6 +279,7 @@ alias fact `Fa` has leaves `phi` and the leaves of `ty`, and holds when
 | `edge_ok`, `phi_fact_justified` | the induction arguments in the comments of `ProcessLoopHeader` and `ProcessDecreasingInduction` |
 | `phi_fact_justified_with`, `phi_fact_justified_using_alias` | facts recorded at the header for earlier phis, used by later ones (`RecordLoopBound`, `ProcessDecreasingInduction`, `EntryLowerBoundOfStart`) |
 | `alias_fwd` | the path argument in the comment of `TryResolveMergeBound` |
+| `guard_value_persists` | "for the same values of the base and of the array length, which do not change within the sequence" (comment of `FallbackInstructionSequence`) |
 | abstract `tf_pred`, `Excluded`, `alias_arith`, the obligations | the Z3 lemmas |
 
 ## Assumptions and what is not modeled
@@ -318,7 +325,12 @@ alias fact `Fa` has leaves `phi` and the leaves of `ty`, and holds when
 - **The transformation is not modeled.** The theorems are about the
   analysis on the input graph: every fact the analysis uses holds in every
   execution of that graph. Removing redundant traps, and the fallback
-  sequences (`FallbackInstructionSequence`), are not modeled.
+  sequences (`FallbackInstructionSequence`), are not modeled, except for
+  the invariant of sequences and their guards, which Z3 checks (see "Z3
+  checks"), and `guard_value_persists`. The emission (cloning the
+  instructions, `in_fallback_code_`, each sequence emitted once) is
+  argued in the comments of the reducer, and exercised by the random
+  tests.
 - **Representatives and the depth limit.** `CanonicalValue` identifies
   values through representatives (the first operation with a given
   structural key) and stops at depth 16. The model uses terms instead. The
@@ -366,7 +378,8 @@ Install the solver with `pip install -r requirements.txt` (in a venv).
   applies the lemmas. The decision functions of the analysis are
   transcribed as z3py functions over 32-bit bitvectors. It first checks
   that the transcribed lines are still in the source (anchors, ignoring
-  whitespace), and stops if one is missing. About 2 minutes. It checks:
+  whitespace), and stops if one is missing. About 5 minutes (z3-solver
+  5.1). It checks:
   - **soundness**: from facts that hold and a condition that holds, the
     facts the code records hold, and a check found redundant cannot fail;
   - **well-formedness** (W1-W8): whatever the facts, the ranges the code
@@ -381,6 +394,26 @@ Install the solver with `pip install -r requirements.txt` (in a venv).
   W9 covers the DCHECK in `CanCoalesce`: within a block, the offsets of
   each sequence are within the known range of its key, which only grows,
   so two sequences always have a hull.
+
+  Fallback sequences (`check_guards`, `check_fallback_sequences`) are
+  checked against an invariant, stated with the positions of the
+  operations:
+  - the guard's index and length are defined before the start;
+  - they are the index `x + index_offset` and the length `l` of a trap;
+  - its known and non-negative offsets are those known at the start;
+  - the bounds of its range are offsets of covered traps;
+  - its covered traps lie between its start and its end.
+
+  `RecordFallbackSequence` establishes the invariant, and `Coalesce`
+  (transcribed) preserves it. Given the invariant, the guard, built by
+  `GuardIndex` from the first index, implies that all the covered traps
+  are within bounds. When the guard fails, a bound of the range, which
+  is a covered trap still present in the fallback code, is out of
+  bounds, so the `Unreachable` at its end is never reached. The values
+  `x` and `l` are those at the start, which are those at the covered
+  traps (`guard_value_persists`). Each planted bug of the `guards` set,
+  transcribed, makes one of these queries fail, as do
+  `coalesce-keeps-known` and `coalesce-keeps-non-negative`.
 
   `INVENTORY` counts the `OffsetRange` constructions, the DCHECKs and the
   calls to `MinLength` and `LengthKey` in the source: when a count
@@ -407,8 +440,8 @@ source is reported, and must be updated. The sets:
 - `truncation`: truncated 64-bit additions;
 - `narrowing`: narrowed 64-bit comparisons, and the reading of 64-bit
   values as their truncations;
-- `guards`: the guards of fallback sequences (`GuardIndex`, and the index and
-  length moved by `Coalesce`);
+- `guards`: the guards of fallback sequences (`GuardIndex`, and the
+  index, the length and the facts moved by `Coalesce`);
 - `dchecks`: checks that seem redundant, turned into DCHECKs, to see
   whether they can fail.
 
@@ -425,7 +458,9 @@ others, and a narrowed relation that can never be the condition of an
 array bounds check), and `bitcast-smi` does not build (and would need a
 moving GC). The `dchecks` set (run on v2) showed that the three checks
 that hold when facts hold are still needed in unreachable code, where
-facts may contradict each other.
+facts may contradict each other. The two mutants `coalesce-keeps-known`
+and `coalesce-keeps-non-negative`, which `check-z3-decisions.py` finds,
+were added after this run and have not been run yet.
 
 ## Probes (`probes/`)
 
@@ -451,5 +486,6 @@ tests do not run the pipeline, and mjsunit tests only see results.
   justification of condition facts.
 - **Mechanize the representative / depth-limit argument** (see above),
   including truncation keys.
-- **Model the transformation.** Trap removal and fallback sequences, with
-  a simulation argument.
+- **Model the transformation.** Trap removal and the emission of fallback
+  sequences, with a simulation argument (their invariant and guards are
+  checked with Z3).

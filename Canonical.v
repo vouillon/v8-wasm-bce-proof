@@ -306,6 +306,30 @@ Proof.
   apply canon_leaves_dom with (t := t); auto.
 Qed.
 
+(** Fallback sequences: the guard of a sequence, at [p] (its start),
+    computes the indices it checks from the index [x] of its first trap,
+    defined before [p], and so from the value at [p] of the base [tb] of
+    the key, whose leaves are leaves of the canonical term of [x].  At a
+    covered trap, at time [k] (dominated by [p], without visiting [p]
+    again: later in the same block), the base has the same value, so
+    that the guard checks the indices of the covered traps
+    ([check_fallback_sequences] in z3/).  The same holds for the length,
+    with [tb] the canonical term of the length of the first trap, which
+    is the one of the length of each covered trap ([same_canonical_value]). *)
+Lemma guard_value_persists :
+  forall p t0 k x t tb,
+  k <= len e -> t0 <= k -> pts e t0 = p ->
+  (forall j, t0 < j -> j <= k -> pts e j <> p) ->
+  dom p (pts e k) -> dom (def x) p -> canon x t ->
+  (forall v, In v (tleaves tb) -> In v (tleaves t)) ->
+  eval (env e k) tb = eval (env e t0) tb.
+Proof.
+  intros p t0 k x t tb Hk Ht0 Hp Hlast Hdom Hx Hc Hsub.
+  apply eval_persist with (p := p); auto.
+  intros v Hv. apply dom_trans with (b := def x); auto.
+  apply canon_leaves_dom with (t := t); auto.
+Qed.
+
 End Exec.
 
 (** ** Facts over canonical terms

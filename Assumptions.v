@@ -6,6 +6,7 @@ Print Assumptions Loops.loop_justified.
 Print Assumptions Loops.invariant_back_ok.
 Print Assumptions Canonical.canon_sound.
 Print Assumptions Canonical.same_canonical_value.
+Print Assumptions Canonical.guard_value_persists.
 Print Assumptions Canonical.known_fact_on_ssa_values.
 Print Assumptions Induction.phi_fact_justified.
 Print Assumptions Induction.phi_fact_justified_with.

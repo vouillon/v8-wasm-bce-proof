@@ -1,6 +1,6 @@
 # Usage: check-z3-decisions.py <v8 dir> [--from <name>]
 # With --from, the queries before the first one whose name contains
-# <name> are skipped. The whole check takes about 2 minutes. The anchors
+# <name> are skipped. The whole check takes about 5 minutes. The anchors
 # are those of the CL series (branch bce-series-v3, head e5eb75d2633), which
 # differs from the bce-loop-ideas prototype in a few places (MinLength's
 # DCHECK, no constant on the left of 32-bit or truncated additions).
@@ -75,6 +75,17 @@ ANCHORS = {
         'if (!seq.key().base.valid()) return __ Word32Constant(offset);',
         'uint32_t delta = offset - seq.index_offset();',
         'return delta == 0 ? index : __ Word32Add(index, __ Word32Constant(delta));',
+        # CanCoalesce, Coalesce.
+        'if (end_index_ < other.start_index_) return false;',
+        'offsets_ = *offsets_.Hull(other.offsets_); '
+        'if (other.start_index_ < start_index_) {',
+        'index_ = other.index_; index_offset_ = other.index_offset_; '
+        'array_length_ = other.array_length_; '
+        'known_offsets_ = other.known_offsets_; '
+        'non_negative_offsets_ = other.non_negative_offsets_; '
+        'start_index_ = other.start_index_; '
+        'start_position_ = other.start_position_; } '
+        'end_index_ = other.end_index_; end_position_ = other.end_position_;',
     ],
     'cc': [
         'static constexpr uint32_t kMaxArrayLength = 1u << 30;',
@@ -199,6 +210,17 @@ ANCHORS = {
         'change->Is<Opmask::kChangeInt32ToInt64>())) {',
         'binop->kind == WordBinopOp::Kind::kAdd ? *constant : -*constant;',
         'return {OpIndex::Invalid(), TruncationKey(index), offset};',
+        # UpdateKnownBoundsChecks, RecordFallbackSequence.
+        'OpIndex start_index = starts_at_condition ? condition : trap_if;',
+        'TrapInfo{trap_if, index, length, start_index, start_position, '
+        'known_before, non_negative_before});',
+        'OffsetRange(previous_offset).Hull(OffsetRange(offset));',
+        'OpIndex fallback_end_index = graph_.NextIndex(trap_if);',
+        'FallbackInstructionSequence new_sequence( phase_zone_, key, '
+        'previous.index, previous_offset, previous.length, *offsets, '
+        'previous.known_offsets, previous.non_negative_offsets, '
+        'previous.start_index, fallback_end_index, previous.start_position, '
+        'current_position_ + 1, {previous.trap_if, trap_if});',
     ],
 }
 
@@ -553,50 +575,195 @@ def check_non_negative_index():
                   [bound >= limit, sop(bound, index)], index < 0)
 
 
+def guard_index(base_valid, index, index_offset, offset):
+    # GuardIndex: {base + offset}, from the index of the first trap of the
+    # sequence, {base + index_offset}.
+    if not base_valid:
+        return offset
+    delta = offset - index_offset
+    return If(delta == 0, index, index + delta)
+
+
+def guard(base_valid, index, index_offset, length, offsets, known, nn):
+    """Returns (check_lower, check_upper, passes, at) for the guard of a
+    sequence (ComputeGuard, EmitBoundsCheck), with {passes} for a guard
+    checking each bound separately, and {at(offset)} the index it
+    checks for {offset}."""
+    lo, hi = offsets.lo, offsets.hi
+
+    def implies_lower(facts):
+        inside, above, _ = classify(facts, lo)
+        return And(facts.present,
+                   Or(inside, And(above, valid_range(facts.hi, hi))))
+
+    def implies_upper(k):
+        inside, _, below = classify(k, hi)
+        return And(k.present,
+                   Or(inside, And(below, valid_range(lo, k.lo))))
+
+    lower_implied = Or(implies_lower(known), implies_lower(nn))
+    upper_implied = implies_upper(known)
+    check_lower = Not(lower_implied)
+    check_upper = Or(lower_implied, Not(upper_implied))
+    at = lambda offset: guard_index(base_valid, index, index_offset, offset)
+    one_sided = And(Implies(check_upper, ULT(at(hi), length)),
+                    Implies(check_lower, ULT(at(lo), length)))
+    return check_lower, check_upper, one_sided, at
+
+
 def check_guards():
+    # The guard of a sequence is computed from the index {index} of its
+    # first trap, which is {x + index_offset}, and from the length of that
+    # trap: this is what the invariant of sequences states (see
+    # check_fallback_sequences), for the values of {x} and {l} at the start
+    # of the sequence, which are their values at its covered traps
+    # (Canonical.guard_value_persists).
     for base_valid, what in BASES:
         for single in [True, False]:
             st = State(base_valid)
-            lo, hi = fresh('lo'), fresh('hi')
+            lo, hi, io = fresh('lo'), fresh('hi'), fresh('index_offset')
             offsets = Opt.some(lo, hi)
-            known = st.known_offsets()
-            nn = st.non_negative
-
-            def implies_lower(facts):
-                inside, above, _ = classify(facts, lo)
-                return And(facts.present,
-                           Or(inside, And(above, valid_range(facts.hi, hi))))
-
-            def implies_upper(k):
-                inside, _, below = classify(k, hi)
-                return And(k.present,
-                           Or(inside, And(below, valid_range(lo, k.lo))))
-
-            lower_implied = Or(implies_lower(known), implies_lower(nn))
-            upper_implied = implies_upper(known)
-            check_lower = Not(lower_implied)
-            check_upper = Or(lower_implied, Not(upper_implied))
             x, l = st.x, st.l
+            index = x + io
+            check_lower, check_upper, one_sided, at = guard(
+                base_valid, index, io, l, offsets, st.known_offsets(),
+                st.non_negative)
             if single:
-                two_sided = ULT(ZeroExt(32, x + lo) + ZeroExt(32, hi - lo),
+                # EmitTwoSidedBoundsCheck, on 64 bits.
+                two_sided = ULT(ZeroExt(32, at(lo)) + ZeroExt(32, hi - lo),
                                 ZeroExt(32, l))
                 passes = If(And(check_lower, check_upper), two_sided,
-                            And(Implies(check_upper, ULT(x + hi, l)),
-                                Implies(check_lower, ULT(x + lo, l))))
+                            one_sided)
             else:
-                passes = And(Implies(check_upper, ULT(x + hi, l)),
-                             Implies(check_lower, ULT(x + lo, l)))
-            prove(f'Guard of a fallback sequence ({what}, '
-                  f'{"64" if single else "32"}-bit)',
+                passes = one_sided
+            bits = "64" if single else "32"
+            prove(f'Guard of a fallback sequence ({what}, {bits}-bit)',
                   [*st.facts(), valid_range(lo, hi), passes],
                   in_bounds_violated(offsets, x, l))
-            if single:
-                prove(f'Two-sided guard holds when both bounds are within '
-                      f'bounds ({what})',
-                      [*env(l), valid_range(lo, hi), ULT(x + lo, l),
-                       ULT(x + hi, l)],
-                      Not(ULT(ZeroExt(32, x + lo) + ZeroExt(32, hi - lo),
-                              ZeroExt(32, l))))
+            # When the guard fails, one of the bounds of the range is out
+            # of bounds. These are offsets of covered traps, which are in
+            # the fallback code: one of them traps before its Unreachable.
+            prove(f'Failing guard: a bound is out of bounds ({what}, '
+                  f'{bits}-bit)',
+                  [*env(l), valid_range(lo, hi), Not(passes)],
+                  And(ULT(x + lo, l), ULT(x + hi, l)))
+
+
+# Fallback sequences. Positions are those of the operations of the block
+# (and of its dominators, before it), in order. A sequence covers the
+# traps of a range of positions [start, end). Its fields are those of
+# FallbackInstructionSequence, with the positions where its index and its
+# length are defined, the positions where its known and non-negative
+# offsets were known, and the positions of the covered traps whose
+# offsets are the bounds of its range.
+class Seq:
+    def __init__(self, name):
+        f = lambda field: fresh(f'{name}_{field}')
+        self.start, self.end = f('start'), f('end')
+        self.index, self.index_offset, self.length = (
+            f('index'), f('index_offset'), f('length'))
+        self.index_pos, self.length_pos = f('index_pos'), f('length_pos')
+        self.offsets = Opt.some(f('lo'), f('hi'))
+        self.known, self.nn = Opt.sym(f'{name}_known'), Opt.sym(f'{name}_nn')
+        self.known_at, self.nn_at = f('known_at'), f('nn_at')
+        self.lo_trap, self.hi_trap = f('lo_trap'), f('hi_trap')
+
+    def covers(self, pos):
+        return And(ULE(self.start, pos), ULT(pos, self.end))
+
+    def invariant(self, base_valid, x, l):
+        # What the guard needs, for the values {x} of the base and {l} of
+        # the length at the start, which are their values at the covered
+        # traps (Canonical.guard_value_persists).
+        return [
+            # The guard's operands are computed before the sequence...
+            ULT(self.index_pos, self.start), ULT(self.length_pos, self.start),
+            # ... and are the index {x + index_offset} and the length of a
+            # trap (only the length for a constant index).
+            self.index == x + self.index_offset if base_valid else BoolVal(True),
+            self.length == l,
+            valid_range(self.offsets.lo, self.offsets.hi),
+            # The facts are those known at the start.
+            self.known_at == self.start, self.nn_at == self.start,
+            # The bounds of the range are offsets of covered traps, which
+            # the fallback code checks when the guard fails.
+            self.covers(self.lo_trap), self.covers(self.hi_trap)]
+
+
+def coalesce(a, b):
+    """Returns ({b} merged into {a}, the hull exists) for Coalesce."""
+    r = Seq('merged')
+    h = hull(a.offsets, b.offsets)
+    move = ULT(b.start, a.start)
+    pick = lambda fa, fb: If(move, fb, fa)
+    r.index, r.index_offset = pick(a.index, b.index), pick(a.index_offset,
+                                                            b.index_offset)
+    r.index_pos = pick(a.index_pos, b.index_pos)
+    r.length, r.length_pos = pick(a.length, b.length), pick(a.length_pos,
+                                                             b.length_pos)
+    r.known = Opt(pick(a.known.present, b.known.present),
+                  pick(a.known.lo, b.known.lo), pick(a.known.hi, b.known.hi))
+    r.known_at = pick(a.known_at, b.known_at)
+    r.nn = Opt(pick(a.nn.present, b.nn.present), pick(a.nn.lo, b.nn.lo),
+               pick(a.nn.hi, b.nn.hi))
+    r.nn_at = pick(a.nn_at, b.nn_at)
+    r.start = pick(a.start, b.start)
+    r.end = b.end
+    r.offsets = Opt.some(h.lo, h.hi)
+    # The covered traps are those of both sequences. The bound of the
+    # merged range must be a bound of one of the ranges (otherwise, no
+    # covered trap is known to have it: position {r.end}, outside).
+    bound_trap = lambda v, va, vb, ta, tb: If(v == va, ta, If(v == vb, tb, r.end))
+    r.lo_trap = bound_trap(h.lo, a.offsets.lo, b.offsets.lo, a.lo_trap, b.lo_trap)
+    r.hi_trap = bound_trap(h.hi, a.offsets.hi, b.offsets.hi, a.hi_trap, b.hi_trap)
+    return r, h.present
+
+
+def check_fallback_sequences():
+    for base_valid, what in BASES:
+        x = fresh('x') if base_valid else bv(0)
+        l = fresh('l')
+        # RecordFallbackSequence, from the previous trap of the key (its
+        # TrapInfo) and the current one. The index and the length of the
+        # previous trap are inputs of its condition, which precedes it; the
+        # sequence starts at the condition if it is right before the trap.
+        # Its known and non-negative offsets are those known when the
+        # previous trap was processed, which are those known at its
+        # condition (nothing is recorded in between).
+        cond, prev, cur = fresh('cond'), fresh('prev_trap'), fresh('cur_trap')
+        prev_offset, offset = fresh('prev_offset'), fresh('offset')
+        at_condition = fresh_bool('starts_at_condition')
+        s = Seq('new')
+        h = hull(Opt.some(prev_offset, prev_offset), Opt.some(offset, offset))
+        structure = [ULT(cond, prev), ULT(prev, cur), ULT(cur, cur + 1),
+                     ULT(s.index_pos, cond), ULT(s.length_pos, cond)]
+        s.start = If(at_condition, cond, prev)
+        s.end = cur + 1
+        s.index = x + prev_offset
+        s.index_offset = prev_offset
+        s.length = l
+        s.known_at, s.nn_at = s.start, s.start
+        s.offsets = Opt.some(h.lo, h.hi)
+        bound_trap = lambda v: If(v == prev_offset, prev,
+                                  If(v == offset, cur, s.end))
+        s.lo_trap, s.hi_trap = bound_trap(h.lo), bound_trap(h.hi)
+        prove(f'RecordFallbackSequence: invariant ({what})',
+              [*structure, h.present], Not(And(*s.invariant(base_valid, x, l))))
+        # Coalesce: {b} ends after {a} (DCHECK), and they overlap or are
+        # adjacent (CanCoalesce), so that the merged range covers both.
+        # The hull exists (W9).
+        a, b = Seq('a'), Seq('b')
+        r, present = coalesce(a, b)
+        # Any other covered trap of either sequence.
+        ta, tb, oa, ob = fresh('a_trap'), fresh('b_trap'), fresh('oa'), fresh('ob')
+        prove(f'Coalesce: invariant ({what})',
+              [*a.invariant(base_valid, x, l), *b.invariant(base_valid, x, l),
+               ULE(a.end, b.end), Not(ULT(a.end, b.start)), present,
+               a.covers(ta), contains(a.offsets, oa),
+               b.covers(tb), contains(b.offsets, ob)],
+              Not(And(*r.invariant(base_valid, x, l),
+                      r.covers(ta), contains(r.offsets, oa),
+                      r.covers(tb), contains(r.offsets, ob))))
 
 
 def check_small_bound():
@@ -1040,6 +1207,7 @@ def main():
     check_process_not_equal()
     check_non_negative_index()
     check_guards()
+    check_fallback_sequences()
     check_small_bound()
     check_not_equal_induction()
     check_loop_bound()

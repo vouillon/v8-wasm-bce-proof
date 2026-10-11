@@ -247,6 +247,14 @@ GUARD_MUTANTS = [
     # guard.
     ('coalesce-keeps-length',
      '      array_length_ = other.array_length_;\n', '', HEADER),
+    # ... or the facts known at the later start, which may come from
+    # covered traps before it, which the guard then relies on (found by
+    # check-z3-decisions.py, "Coalesce: invariant").
+    ('coalesce-keeps-known',
+     '      known_offsets_ = other.known_offsets_;\n', '', HEADER),
+    ('coalesce-keeps-non-negative',
+     '      non_negative_offsets_ = other.non_negative_offsets_;\n', '',
+     HEADER),
 ]
 
 # Checks that seem redundant, turned into DCHECKs.
