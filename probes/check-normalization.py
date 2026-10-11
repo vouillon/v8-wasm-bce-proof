@@ -50,8 +50,14 @@ def recognized(extra):
     with tempfile.NamedTemporaryFile('w', suffix='.js') as f:
         f.write(PROBE)
         f.flush()
-        out = subprocess.run([D8, *FLAGS, *extra, f.name], cwd=V8,
-                             capture_output=True, text=True).stdout
+        r = subprocess.run([D8, *FLAGS, *extra, f.name], cwd=V8,
+                           capture_output=True, text=True)
+    if r.returncode != 0:
+        # Not a normalization failure: d8 itself failed (missing build,
+        # removed flag...).
+        sys.exit(f'FAILS: {D8} exited with {r.returncode}:\n'
+                 f'{(r.stdout + r.stderr)[-2000:]}')
+    out = r.stdout
     result = {}
     for name, body in re.findall(r'== (\w+)\n(.*?)(?===|\Z)', out, re.S):
         result[name] = bool(re.search(r'Known offsets for base \d+ and '

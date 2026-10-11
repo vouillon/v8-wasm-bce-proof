@@ -475,7 +475,13 @@ takes to find it, with the verifier on and 8 workers, and whether
 checkout, `V8_BUILD_DIR` its build directory (default `out/x64.optdebug`),
 `BUDGET` the seconds of fuzzing per bug (240), and `FUZZ_DIR` where the
 results go (`./plant-bugs-results`). An edit that no longer matches the
-source is reported, and must be updated. The sets:
+source is reported, and must be updated. At the end, on the rebuilt
+original, the driver runs each seed that found a bug again: one that also
+fails there (`"baseline": "fails"`) did not find the bug. It also records
+whether the original passes `bounds-check-elimination.js`. The results
+below predate this control. The driver restores the source on an
+interrupt or a `SIGTERM`. It stops if someone else changes the edited
+files during a run, without overwriting their changes. The sets:
 
 - `loops`: the loop rules (induction, not-equal bounds, entry lower
   bounds, length aliases);

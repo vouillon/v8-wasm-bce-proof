@@ -4,8 +4,12 @@
 # one-line edit of the source, which is restored at the end; d8 is
 # rebuilt for each one, in $V8_BUILD_DIR (default: out/x64.optdebug of
 # $V8_DIR, the V8 checkout, which is required). Results go to
-# $FUZZ_DIR/mutants.json, logs to $FUZZ_DIR/mutant-logs (default:
-# ./plant-bugs-results).
+# $FUZZ_DIR/mutants.json (after each bug), logs to $FUZZ_DIR/mutant-logs
+# (default: ./plant-bugs-results). At the end, once the original source
+# is rebuilt, each seed that found a bug is run again on it: a seed that
+# also fails there ("baseline": "fails") did not find the bug, and the
+# control entry "(original)" says whether the original passes
+# bounds-check-elimination.js.
 # Usage: plant-bugs.py [--set loops|persistence|truncation|narrowing|guards|
 #                             emission|dchecks]
 #                      [names...]
@@ -340,15 +344,36 @@ def kind(log):
     return 'other'
 
 
+LOOP_TEST = 'test/mjsunit/wasm/bounds-check-elimination-loops.js'
+OLD_TEST = 'test/mjsunit/wasm/bounds-check-elimination.js'
+
+# The runs of all the workers, including those terminated when another
+# one finds the bug.
+RUNS = None
+
+
+def init_worker(runs):
+    global RUNS
+    RUNS = runs
+    # Workers are terminated with SIGTERM (Pool.terminate).
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+
+def old_test():
+    code, log, _ = d8(OLD, OLD_TEST, timeout=900)
+    return log, ('pass' if code == 0 else 'timeout' if code == 'timeout'
+                 else kind(log))
+
+
 def fuzz_one(deadline):
     random.seed(os.urandom(8))
     runs = timeouts = 0
     while time.time() < deadline:
         seed = random.randrange(1, 2**31)
         flags = LOOP + [f for f in OPTIONAL if random.random() < 0.3]
-        code, log, cmd = d8(flags, 'test/mjsunit/wasm/bounds-check-elimination-loops.js',
-                            [str(seed), '200'], timeout=120)
+        code, log, cmd = d8(flags, LOOP_TEST, [str(seed), '200'], timeout=120)
         runs += 1
+        with RUNS.get_lock(): RUNS.value += 1
         # A timeout is not a detection: the random test itself may loop
         # (which is a bug of the test, to report).
         if code == 'timeout':
@@ -362,7 +387,36 @@ def fuzz_one(deadline):
     return {'runs': runs, 'timeouts': timeouts}
 
 
+def save(results):
+    os.makedirs(HERE, exist_ok=True)
+    with open(os.path.join(HERE, 'mutants.json'), 'w') as f:
+        json.dump(results, f, indent=1)
+
+
+def build():
+    b = subprocess.run(['autoninja', '-C', OUT, 'd8'], cwd=V8,
+                       capture_output=True)
+    return b.returncode == 0, (b.stdout + b.stderr).decode(errors='replace')
+
+
+def baseline(results):
+    # Runs each seed that found a bug on the original build: a seed that
+    # also fails there did not find the bug.
+    for entry in results:
+        if 'seed' not in entry: continue
+        code, _, _ = d8(entry['flags'], LOOP_TEST, [str(entry['seed']), '200'],
+                        timeout=120)
+        entry['baseline'] = ('pass' if code == 0 else 'timeout'
+                             if code == 'timeout' else 'fails')
+        if entry['baseline'] != 'pass':
+            print(f'{entry["name"]}: seed {entry["seed"]} also fails on the '
+                  f'original ({entry["baseline"]})', flush=True)
+
+
 def main():
+    # A SIGTERM (kill, timeout) runs the finally clause below, which
+    # restores the source, as an interrupt does.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit('terminated'))
     args = sys.argv[1:]
     sets = {'loops': MUTANTS, 'persistence': PERSISTENCE_MUTANTS,
             'truncation': TRUNCATION_MUTANTS, 'narrowing': NARROWING_MUTANTS,
@@ -383,7 +437,25 @@ def main():
     os.makedirs(LOGS, exist_ok=True)
     originals = {path: open(os.path.join(V8, path)).read()
                  for path in [SRC, HEADER]}
+    written = {}  # The edited files, with the edit written.
+
+    def restore(path):
+        # Unless someone else changed the file meanwhile: their version,
+        # which may still contain the planted bug, is then kept, and the
+        # run stops (the originals are stale).
+        current = open(os.path.join(V8, path)).read()
+        written_text = written.pop(path, None)
+        if current == written_text:
+            open(os.path.join(V8, path), 'w').write(originals[path])
+        elif current != originals[path]:
+            print(f'{path} was changed by someone else during the run, and '
+                  'is not restored: check that it does not contain the '
+                  'planted bug, and rebuild d8', flush=True)
+            return False
+        return True
+
     results = []
+    completed = False
     try:
         for name, old, new, *path in mutants:
             if name not in names: continue
@@ -394,33 +466,41 @@ def main():
                 print(f'{name}: edit found {original.count(old)} times', flush=True)
                 results.append({'name': name, 'edit': 'not found'})
                 continue
-            open(os.path.join(V8, path), 'w').write(original.replace(old, new))
-            b = subprocess.run(['autoninja', '-C', OUT, 'd8'], cwd=V8,
-                               capture_output=True)
+            if open(os.path.join(V8, path)).read() != original:
+                print(f'{path} was changed by someone else during the run: '
+                      'stopping', flush=True)
+                break
+            written[path] = original.replace(old, new)
+            open(os.path.join(V8, path), 'w').write(written[path])
+            built, build_log = build()
             # d8 keeps the bug until the next build.
-            open(os.path.join(V8, path), 'w').write(original)
-            if b.returncode != 0:
+            if not restore(path):
+                break
+            if not built:
                 print(f'{name}: build failed', flush=True)
+                with open(os.path.join(LOGS, f'{name}-build.log'), 'w') as f:
+                    f.write(build_log[-20000:])
                 results.append({'name': name, 'build': 'failed'})
+                save(results)
                 continue
-            code, log, _ = d8(OLD, 'test/mjsunit/wasm/bounds-check-elimination.js',
-                              timeout=900)
-            old_result = 'pass' if code == 0 else kind(log)
+            log, old_result = old_test()
             with open(os.path.join(LOGS, f'{name}-old.log'), 'w') as f: f.write(log[-20000:])
             start = time.time()
-            with multiprocessing.Pool(WORKERS) as pool:
+            runs_counter = multiprocessing.Value('i', 0)
+            with multiprocessing.Pool(WORKERS, init_worker,
+                                      (runs_counter,)) as pool:
                 pending = [pool.apply_async(fuzz_one, (start + BUDGET,))
                            for _ in range(WORKERS)]
-                found, runs, timeouts = None, 0, 0
+                found, timeouts = None, 0
                 while pending and not found:
                     time.sleep(1)
                     for p in [p for p in pending if p.ready()]:
                         pending.remove(p)
                         r = p.get()
-                        runs += r['runs']
                         timeouts += r['timeouts']
                         if 'seed' in r: found = r
                 pool.terminate()
+            runs = runs_counter.value
             entry = {'name': name, 'old_test': old_result, 'runs': runs}
             if timeouts: entry['timeouts'] = timeouts
             if found:
@@ -430,14 +510,23 @@ def main():
                 with open(os.path.join(LOGS, f'{name}-loop.log'), 'w') as f:
                     f.write(' '.join(found['flags']) + f'\nseed {found["seed"]}\n\n' + found['log'])
             results.append(entry)
+            save(results)
             print(json.dumps({k: v for k, v in entry.items() if k != 'flags'}), flush=True)
+        else:
+            completed = True
     finally:
-        for path, original in originals.items():
-            open(os.path.join(V8, path), 'w').write(original)
-        subprocess.run(['autoninja', '-C', OUT, 'd8'], cwd=V8, capture_output=True)
-        os.makedirs(HERE, exist_ok=True)
-        with open(os.path.join(HERE, 'mutants.json'), 'w') as f:
-            json.dump(results, f, indent=1)
+        restored = all([restore(path) for path in list(written)])
+        built, _ = build()
+        if not built:
+            print('the original source does not build', flush=True)
+        elif completed and restored:
+            # Controls, on the original build.
+            _, old_result = old_test()
+            results.append({'name': '(original)', 'old_test': old_result})
+            if old_result != 'pass':
+                print(f'the original fails {OLD_TEST} ({old_result})', flush=True)
+            baseline(results)
+        save(results)
 
 
 if __name__ == '__main__':
