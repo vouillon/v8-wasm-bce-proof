@@ -12,4 +12,8 @@ clean: Makefile.coq
 assumptions: all
 	coqc -R . BCE Assumptions.v
 
-.PHONY: all clean assumptions
+# What the model cites from the C++ code: make anchors V8_DIR=<v8 dir>
+anchors:
+	python3 check-model-anchors.py $(V8_DIR)
+
+.PHONY: all clean assumptions anchors

@@ -18,6 +18,9 @@ and a probe of the pipeline (`probes/`).
 
 Build with `make` (it calls `coq_makefile`). `make assumptions` prints the
 axioms the main theorems depend on. Only the standard library is used.
+`make anchors V8_DIR=<v8 dir>` (`check-model-anchors.py`) checks that what
+the model and this README cite from the C++ code (identifiers, Z3 lemma
+names, quoted comments) is still in the source, at the commit above.
 
 | File | Content |
 |---|---|
