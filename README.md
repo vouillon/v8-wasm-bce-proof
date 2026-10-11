@@ -22,6 +22,14 @@ axioms the main theorems depend on. Only the standard library is used.
 the model and this README cite from the C++ code (identifiers, Z3 lemma
 names, quoted comments) is still in the source, at the commit above.
 
+`make check V8_DIR=<v8 dir> [V8_COMMIT=<commit>]` (`check.sh`) runs all
+the checks against the reducer of a V8 checkout, or against the reducer
+at `<commit>` of it (read with `git show`, so the checkout may be on
+another branch): the Rocq build with no axiom but `classic`, the anchors,
+and both Z3 scripts (with `$PYTHON`, which needs `z3-solver`). Run it
+when the CL series changes. It takes about 9 minutes, and exits with a
+non-zero status if a check fails.
+
 | File | Content |
 |---|---|
 | `Graph.v` | Paths, dominance, and its basic properties |
@@ -445,8 +453,10 @@ Install the solver with `pip install -r requirements.txt` (in a venv).
   bounds, so the `Unreachable` at its end is never reached. The values
   `x` and `l` are those at the start, which are those at the covered
   traps (`guard_value_persists`). Each planted bug of the `guards` set,
-  transcribed, makes one of these queries fail, as do
-  `coalesce-keeps-known` and `coalesce-keeps-non-negative`.
+  transcribed, makes one of these queries fail. The invariant is stronger
+  than what the guard needs: `coalesce-keeps-known` and
+  `coalesce-keeps-non-negative` break it, but the guard they compute is
+  the same (see "Planted bugs").
 
   `INVENTORY` counts the `OffsetRange` constructions, the DCHECKs and the
   calls to `MinLength` and `LengthKey` in the source: when a count
@@ -456,7 +466,7 @@ Install the solver with `pip install -r requirements.txt` (in a venv).
 
 ## Planted bugs (`planted-bugs/`)
 
-`plant-bugs.py [--set loops|persistence|truncation|narrowing|guards|dchecks]
+`plant-bugs.py [--set loops|persistence|truncation|narrowing|guards|emission|dchecks]
 [names...]` plants bugs in the analysis (one-line edits of the source,
 restored at the end), rebuilds `d8` for each one, and measures how long
 the random loop test (`test/mjsunit/wasm/bounds-check-elimination-loops.js`)
@@ -475,6 +485,11 @@ source is reported, and must be updated. The sets:
   values as their truncations;
 - `guards`: the guards of fallback sequences (`GuardIndex`, and the
   index, the length and the facts moved by `Coalesce`);
+- `emission`: how the reducer emits fallback sequences, which the Z3
+  queries do not model. The mutants are a sequence emitted within the
+  fallback code of another (`in_fallback_code_`), fallback code without
+  its last covered trap, and guards accepting an index equal to the
+  length;
 - `dchecks`: checks that seem redundant, turned into DCHECKs, to see
   whether they can fail.
 
@@ -491,9 +506,30 @@ others, and a narrowed relation that can never be the condition of an
 array bounds check), and `bitcast-smi` does not build (and would need a
 moving GC). The `dchecks` set (run on v2) showed that the three checks
 that hold when facts hold are still needed in unreachable code, where
-facts may contradict each other. The two mutants `coalesce-keeps-known`
-and `coalesce-keeps-non-negative`, which `check-z3-decisions.py` finds,
-were added after this run and have not been run yet.
+facts may contradict each other.
+
+The `emission` set and two more `guards` mutants were run later on the
+same commit. The five `emission` mutants are found within seconds, and
+all but `guard-le` by `bounds-check-elimination.js` too. The first two
+abort while the reducer emits code (the kept log tails only show the
+stack, presumably that of the DCHECK that each sequence is emitted
+once).
+`coalesce-keeps-known` and `coalesce-keeps-non-negative`, which
+`check-z3-decisions.py` finds, are not found in 15 minutes each
+(`BUDGET=900`, about 1,400 and 900 runs), and seem unobservable: the
+guard they compute is the same. The guard moves to the start of the
+earlier sequence, before the later one's first trap. The extreme offsets
+of the merged range are those of traps after that later start, which
+extend the known range when they are checked, so they are not in the
+known range there. The extra facts from between the two starts come
+from covered traps or, for non-negative offsets (keyed by the base
+alone), from checks of other arrays. The latter are folded into the
+known range of each later check ([non-negative-and-check]), which makes
+the trap that would extend the range downward redundant
+(`coalesce-keeps-non-negative-repro.js` in the bench tried this).
+These two mutants are thus caught only by the Z3 invariant, which is
+stronger than what the guard needs. In total, 44 of the 49 planted bugs
+are found.
 
 ## Probes (`probes/`)
 

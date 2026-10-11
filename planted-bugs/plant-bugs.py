@@ -6,7 +6,8 @@
 # $V8_DIR, the V8 checkout, which is required). Results go to
 # $FUZZ_DIR/mutants.json, logs to $FUZZ_DIR/mutant-logs (default:
 # ./plant-bugs-results).
-# Usage: plant-bugs.py [--set loops|persistence|truncation|narrowing|guards|dchecks]
+# Usage: plant-bugs.py [--set loops|persistence|truncation|narrowing|guards|
+#                             emission|dchecks]
 #                      [names...]
 # Without --set, named bugs are looked up in all the sets, and with no
 # names, the loops set runs.
@@ -16,7 +17,9 @@
 # "truncation" set the decomposition of truncated 64-bit additions
 # (bce-loop-ideas branch), the "narrowing" set the narrowing of 64-bit
 # comparisons and the reading of 64-bit values as their truncations
-# (bce-loop-ideas, 7c94e0ee3b6). The "dchecks" set replaces checks that seem
+# (bce-loop-ideas, 7c94e0ee3b6). The "guards" set targets the guards of
+# fallback sequences, and the "emission" set how the reducer emits them,
+# which is not checked with Z3. The "dchecks" set replaces checks that seem
 # redundant by DCHECKs: one that is "found" is not redundant (the DCHECK
 # fails, in unreachable code with contradictory facts for instance).
 import ctypes, json, multiprocessing, os, random, signal, subprocess, sys, time
@@ -247,14 +250,44 @@ GUARD_MUTANTS = [
     # guard.
     ('coalesce-keeps-length',
      '      array_length_ = other.array_length_;\n', '', HEADER),
-    # ... or the facts known at the later start, which may come from
-    # covered traps before it, which the guard then relies on (found by
-    # check-z3-decisions.py, "Coalesce: invariant").
+    # ... or the facts known at the later start. This breaks the invariant
+    # checked by check-z3-decisions.py ("Coalesce: invariant"), but seems
+    # unobservable: the guard computed is the same (see the README).
     ('coalesce-keeps-known',
      '      known_offsets_ = other.known_offsets_;\n', '', HEADER),
     ('coalesce-keeps-non-negative',
      '      non_negative_offsets_ = other.non_negative_offsets_;\n', '',
      HEADER),
+]
+
+# Bugs in the emission of fallback sequences by the reducer (bce-series-v3),
+# which the Z3 queries do not model.
+EMISSION_MUTANTS = [
+    # A sequence is also emitted within the fallback code of another one,
+    # which removes its covered traps from the rest of the graph, including
+    # the fast path of the other sequence (see in_fallback_code_).
+    ('emit-in-fallback-code', '    if (in_fallback_code_) return;\n', '',
+     HEADER),
+    ('fallback-mode-not-set',
+     '    ScopedModification<bool> set_true(&in_fallback_code_, true);\n', '',
+     HEADER),
+    # The fallback code lacks the last covered trap: when the guard fails
+    # on its offset, the fallback code reaches its Unreachable.
+    ('fallback-drops-last-trap',
+     '    __ CloneAndInlineTrappingInstructions(seq.start_index(), '
+     'seq.end_index(),',
+     '    __ CloneAndInlineTrappingInstructions(seq.start_index(), '
+     '__ input_graph().PreviousIndex(seq.end_index()),', HEADER),
+    # The guard accepts an index equal to the length.
+    ('guard-le',
+     '    GOTO_IF_NOT(LIKELY(__ Uint32LessThan(index, length)), fallback_code);',
+     '    GOTO_IF_NOT(LIKELY(__ Uint32LessThanOrEqual(index, length)), '
+     'fallback_code);', HEADER),
+    ('two-sided-guard-le',
+     '    GOTO_IF_NOT(LIKELY(__ Uint64LessThan(end, '
+     '__ ChangeUint32ToUint64(length))),',
+     '    GOTO_IF_NOT(LIKELY(__ Uint64LessThanOrEqual(end, '
+     '__ ChangeUint32ToUint64(length))),', HEADER),
 ]
 
 # Checks that seem redundant, turned into DCHECKs.
@@ -333,7 +366,8 @@ def main():
     args = sys.argv[1:]
     sets = {'loops': MUTANTS, 'persistence': PERSISTENCE_MUTANTS,
             'truncation': TRUNCATION_MUTANTS, 'narrowing': NARROWING_MUTANTS,
-            'guards': GUARD_MUTANTS, 'dchecks': DCHECK_MUTANTS}
+            'guards': GUARD_MUTANTS, 'emission': EMISSION_MUTANTS,
+            'dchecks': DCHECK_MUTANTS}
     if args[:1] == ['--set']:
         mutants = sets[args[1]]
         args = args[2:]

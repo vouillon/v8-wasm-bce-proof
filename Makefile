@@ -16,4 +16,8 @@ assumptions: all
 anchors:
 	python3 check-model-anchors.py $(V8_DIR)
 
-.PHONY: all clean assumptions anchors
+# All the checks (check.sh): make check V8_DIR=<v8 dir> [V8_COMMIT=<commit>]
+check:
+	./check.sh $(V8_DIR) $(V8_COMMIT)
+
+.PHONY: all clean assumptions anchors check
