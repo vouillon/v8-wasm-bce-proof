@@ -44,6 +44,8 @@ print('ALL UNSAT' if ok else 'SOME LEMMA FAILS', len(lemmas))
 vac = True
 for i, b in enumerate(lemmas):
     idx = b.rfind('(assert (not')
+    if idx < 0: print('NO NEGATED CONCLUSION', i + 1); vac = False; continue
     s = z3.Solver(); s.from_string('\n'.join(pre) + '\n' + b[:idx])
     if s.check() != z3.sat: print('VACUOUS', i + 1); vac = False
 print('NONE VACUOUS' if vac else 'SOME VACUOUS')
+sys.exit(0 if ok and vac and lemmas else 1)

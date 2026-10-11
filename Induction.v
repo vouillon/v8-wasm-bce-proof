@@ -9,12 +9,14 @@
 
     This is the argument of the comments of [ProcessLoopHeader] and
     [ProcessDecreasingInduction]: "When the back edge is taken, the
-    conditions collected below held when they were tested [...]. The
-    value of {i} they tested is the current one, since the header,
-    where {i} is defined, is not executed again before the back edge.
-    This value satisfied the facts (induction hypothesis), and the
-    lemmas show that {i + c}, the value of {i} at the next iteration,
-    does too."  The remaining obligations ([fwd_obligation] and
+    conditions collected below hold [...]. They held when they were
+    tested, and still hold at the back edge, as their operands are not
+    computed again in between: they are computed in dominators of the
+    branch, and the header, where {i} is defined, is not executed again
+    before the back edge (see {CanonicalValue}). The current value of
+    {i} satisfied the invariant (induction hypothesis), and the lemmas
+    show that {i + c}, the value of {i} at the next iteration, does
+    too."  The remaining obligations ([fwd_obligation] and
     [back_obligation]) are about values only: they are the arithmetic
     lemmas checked with Z3 ([induction-constant], [induction-length],
     [induction-not-equal], [induction-decreasing]...), applied to the
@@ -134,6 +136,61 @@ Proof.
     intros k Hk Hlen Hpt Hpred. apply (Hphi k); auto.
   - apply arrival_ok with (x := inext) (t := tn); auto.
     intros k Hk Hlen Hpt Hpred. apply (Hphi k); auto.
+Qed.
+
+(** ** Using the facts recorded earlier at the header
+
+    Later phis of the header may use facts recorded at the header for
+    earlier ones, which hold on arrival at the same time (see the comment
+    of [ProcessLoopHeader]): the length alias of [TryResolveMergeBound],
+    used by [RecordLoopBound] and by [ProcessDecreasingInduction] for a
+    start [i0] that is the aliased bound, and the min length of
+    [RecordLoopBound], used by [EntryLowerBoundOfStart] on the forward
+    edge of a decreasing phi.  The obligations may then also assume the
+    facts [E] on arrival, in [en'].  The facts of [E] must be justified
+    without [F] ([justified_at_seq]): they are recorded before it. *)
+Definition arrival_obligation_with (E : tfact -> Prop) (pred : point)
+    (t : term) : Prop :=
+  forall (en en' : var -> val),
+  (forall F', A pred F' -> tholds F' en) ->
+  (forall F', E F' -> tholds F' en') ->
+  (forall v, In v (tfleaves F) -> v <> i -> en' v = en v) ->
+  en' i = eval en t ->
+  tholds F en'.
+
+Lemma arrival_obligation_with_weaken :
+  forall E pred t, arrival_obligation pred t -> arrival_obligation_with E pred t.
+Proof. intros E pred t H en en' Hk _. apply H. exact Hk. Qed.
+
+Theorem phi_fact_justified_with :
+  forall e (E : tfact -> Prop), pure_sem e -> phi_sem e ->
+  (forall F', E F' -> justified_at e h F') ->
+  arrival_obligation_with E f t0 -> arrival_obligation_with E b tn ->
+  justified_at e h F.
+Proof.
+  intros e E He Hphi HE Hf Hb k Hk Hpt Hhyps.
+  destruct k as [| k].
+  { rewrite ex_entry in Hpt. symmetry in Hpt. contradiction. }
+  (* The facts of [E] hold on arrival. *)
+  assert (HEk : forall F', E F' -> tholds F' (env e (S k)))
+    by (intros F' HF'; exact (HE F' HF' (S k) Hk Hpt Hhyps)).
+  assert (Hs : succ (pts e k) h)
+    by (rewrite <- Hpt; apply ex_succ with (e := e); lia).
+  assert (Hknown : forall F', A (pts e k) F' -> tholds F' (env e k))
+    by (intros; apply Hhyps; [lia | auto]).
+  assert (Hframe : forall v, In v (tfleaves F) -> v <> i ->
+                   env e (S k) v = env e k v).
+  { intros v Hv Hne. apply ex_frame; [lia |]. rewrite Hpt.
+    intro Hdef. apply Hne, leaves_F; auto. }
+  destruct (Hphi (S k)) as [Hphif Hphib]; [lia | exact Hk | exact Hpt |].
+  replace (S k - 1) with k in Hphif, Hphib by lia.
+  destruct (preds_h _ Hs) as [Hp | Hp]; rewrite Hp in Hknown.
+  - apply Hf with (en := env e k); auto. rewrite Hphif by auto.
+    apply canon_sound with (op := op) (comm := comm) (ident := ident);
+      auto; [lia | rewrite Hp; auto].
+  - apply Hb with (en := env e k); auto. rewrite Hphib by auto.
+    apply canon_sound with (op := op) (comm := comm) (ident := ident);
+      auto; [lia | rewrite Hp; auto].
 Qed.
 
 (** In the back obligation, the facts known at the back edge include

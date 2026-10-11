@@ -24,6 +24,7 @@
 From Coq Require Import List Arith Lia Classical.
 Import ListNotations.
 From BCE Require Import Graph Persistence Loops Canonical.
+From BCE Require Induction.
 
 Section Alias.
 
@@ -249,6 +250,32 @@ Corollary justified_using_alias :
 Proof.
   intros HR G HG. apply justified_at_seq with (F1 := Fa); auto.
   apply alias_justified. exact HR.
+Qed.
+
+(** The same, for a fact about a loop phi of the header, shown by
+    induction on the iterations (Induction.v), whose obligations use the
+    alias on arrival: [RecordLoopBound] for the bound [i + [0, r - 1] < l]
+    of an increasing phi, and [ProcessDecreasingInduction] for a
+    decreasing phi whose start is the aliased bound. *)
+Corollary phi_fact_justified_using_alias :
+  R h Fa ->
+  forall i i0 inext G t0 tn,
+  dom (def i0) f -> dom (def inext) b ->
+  canon i0 t0 -> canon inext tn ->
+  (forall v, In v (tfleaves G) -> def v = h -> v = i) ->
+  Induction.phi_sem point succ entry var val def h f b i i0 inext e ->
+  Induction.arrival_obligation_with point succ entry var val fn eval_fn R i G
+    (fun F' => F' = Fa) f t0 ->
+  Induction.arrival_obligation_with point succ entry var val fn eval_fn R i G
+    (fun F' => F' = Fa) b tn ->
+  justified_at e h G.
+Proof.
+  intros HR i i0 inext G t0 tn Hi0 Hinext Hc0 Hcn HG Hphi' Hf Hb.
+  apply (Induction.phi_fact_justified_with point succ entry var val def fn
+           eval_fn op op_ssa comm comm_ok ident ident_ok R h f b preds_h
+           h_not_entry i i0 inext Hi0 Hinext G t0 tn Hc0 Hcn HG e
+           (fun F' => F' = Fa)); auto.
+  intros F' ->. apply alias_justified. exact HR.
 Qed.
 
 (** End to end: if the other recorded facts satisfy the leaves condition

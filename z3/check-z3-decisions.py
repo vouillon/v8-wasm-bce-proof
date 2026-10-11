@@ -69,6 +69,12 @@ ANCHORS = {
         'V<Word64> end = __ Word64Add(__ ChangeUint32ToUint64(start), '
         '__ Word64Constant(uint64_t{size}));',
         'GOTO_IF_NOT(LIKELY(__ Uint32LessThan(index, length)), fallback_code);',
+        'GOTO_IF_NOT(LIKELY(__ Uint64LessThan(end, '
+        '__ ChangeUint32ToUint64(length))),',
+        # GuardIndex: {base + offset}, from the index of the first trap.
+        'if (!seq.key().base.valid()) return __ Word32Constant(offset);',
+        'uint32_t delta = offset - seq.index_offset();',
+        'return delta == 0 ? index : __ Word32Add(index, __ Word32Constant(delta));',
     ],
     'cc': [
         'static constexpr uint32_t kMaxArrayLength = 1u << 30;',
@@ -307,6 +313,19 @@ def known_offsets(known, non_negative):
                If(e.present, e.hi, known.hi))
 
 
+def with_min_length(known, m):
+    # For a constant index, the hull of {known} with the offsets below the
+    # min length {m}, if {m > 0} ([min-length-constant-index]), or {known}
+    # if there is no hull.
+    below = Opt.some(bv(0), m - 1)
+    h = hull(known, below)
+    return Opt(Or(known.present, m != 0),
+               If(m == 0, known.lo,
+                  If(known.present, If(h.present, h.lo, known.lo), bv(0))),
+               If(m == 0, known.hi,
+                  If(known.present, If(h.present, h.hi, known.hi), m - 1)))
+
+
 def constant_non_negative():
     return Opt.some(bv(0), bv(K_MAX_INT))
 
@@ -352,10 +371,16 @@ results = []
 started = [START is None]
 
 
-def prove(name, assumptions, violation):
+def skipped(name):
+    # With --from, the queries before the first one whose name contains it.
     if not started[0]:
-        if START not in name: return
+        if START not in name: return True
         started[0] = True
+    return False
+
+
+def prove(name, assumptions, violation):
+    if skipped(name): return
     start = time.time()
     # The solver for quantifier-free bitvector formulas is much faster
     # than the default one on these queries, and so is a fresh solver
@@ -391,6 +416,13 @@ class State:
                 non_negative_fact(self.non_negative, self.x),
                 UGE(self.l, self.min_length)]
 
+    def known_offsets(self):
+        # KnownOffsets: for a constant index, the min length also gives
+        # offsets within bounds.
+        known = (self.known if self.base_valid
+                 else with_min_length(self.known, self.min_length))
+        return known_offsets(known, self.non_negative)
+
 
 BASES = [(True, 'base'), (False, 'constant')]
 
@@ -421,8 +453,7 @@ def check_ranges():
     for base_valid, what in BASES:
         st = State(base_valid)
         prove(f'KnownOffsets ({what})', st.facts(),
-              in_bounds_violated(known_offsets(st.known, st.non_negative),
-                                 st.x, st.l))
+              in_bounds_violated(st.known_offsets(), st.x, st.l))
         offset = fresh('offset')
         prove(f'IsKnownNonNegative ({what})',
               [*st.facts(),
@@ -436,7 +467,7 @@ def process_bounds_check(st, offset, reduction):
     last = offset + reduction
     early = (BoolVal(False) if st.base_valid
              else Not(And(valid_range(bv(0), offset), valid_range(bv(0), last))))
-    known = known_offsets(st.known, st.non_negative)
+    known = st.known_offsets()
     redundant = And(Not(early), known.present, contains(known, offset),
                     contains(known, last))
     direct = Opt.some(offset, last)
@@ -490,7 +521,7 @@ def check_process_not_equal():
         st = State(base_valid)
         offset, reduction = fresh('offset'), fresh('reduction')
         last = offset + reduction - 1
-        known = known_offsets(st.known, st.non_negative)
+        known = st.known_offsets()
         prove(f'ProcessNotEqual ({what})',
               [*st.facts(), ULE(reduction, bv(K_MAX_REDUCTION)),
                st.x + offset != st.l - reduction,
@@ -528,7 +559,7 @@ def check_guards():
             st = State(base_valid)
             lo, hi = fresh('lo'), fresh('hi')
             offsets = Opt.some(lo, hi)
-            known = known_offsets(st.known, st.non_negative)
+            known = st.known_offsets()
             nn = st.non_negative
 
             def implies_lower(facts):
@@ -623,6 +654,8 @@ def entry_lower_bound(x, n_lower, n_excluded, x_constant):
 
 
 def check_not_equal_induction():
+    # Two conditions and three excluded values: with more, the same
+    # invariant ({x} is at least {lower}) is kept by each step.
     for x_constant in [False, True]:
         x = fresh('x')
         assumptions, present, lower = entry_lower_bound(x, 2, 3, x_constant)
@@ -688,22 +721,6 @@ def check_non_strict():
               [*env(l), ULE(r, bv(K_MAX_REDUCTION)),
                (n >= 1) if is_signed else UGE(n, 1), le(n, l - r)],
               Not(lt(n - 1, l - r)))
-
-
-def check_constant_length():
-    # KnownOffsets for a constant index: the offsets below the min length
-    # are within bounds ([min-length-constant-index]), with the hull of
-    # the known range when it is valid.
-    st = State(False)
-    m = st.min_length
-    below = Opt.some(bv(0), m - 1)
-    h = hull(st.known, below)
-    known = Opt(BoolVal(True), If(st.known.present, If(h.present, h.lo, st.known.lo), bv(0)),
-                If(st.known.present, If(h.present, h.hi, st.known.hi), m - 1))
-    prove('KnownOffsets with a min length (constant)',
-          [*st.facts(), m != 0, ULE(m, bv(K_MAX_INT))],
-          in_bounds_violated(known_offsets(known, st.non_negative),
-                             st.x, st.l))
 
 
 def check_not_equal_to_constant():
@@ -807,15 +824,10 @@ def check_well_formedness():
     # (see min_length_model), not assumed to be bounded.
     known, nn = Opt.sym('known'), Opt.sym('nn')
     m_assumptions, m = min_length_model()
-    below = Opt.some(bv(0), m - 1)
-    h = hull(known, below)
-    with_min = Opt(BoolVal(True),
-                   If(known.present, If(h.present, h.lo, known.lo), bv(0)),
-                   If(known.present, If(h.present, h.hi, known.hi), m - 1))
     prove('W4 KnownOffsets with a min length (constant index)',
           [*m_assumptions, valid_opt(known), valid_opt(nn), m != 0],
           Or(Not(valid_range(bv(0), m - 1)),
-             Not(valid_opt(known_offsets(with_min, nn)))))
+             Not(valid_opt(known_offsets(with_min_length(known, m), nn)))))
     r = fresh('r')
     prove('W5 RecordLoopBound: [0, r - 1]',
           [r != 0, ULE(r, bv(K_MAX_REDUCTION))],
@@ -892,11 +904,11 @@ def length_key_model():
     # (assumptions, key is a constant, key) for a length key passed to
     # MinLength (see the comment above MIN_LENGTH_DCHECK).
     constant_case = fresh_bool('constant_case')
-    o = fresh('o')
-    key_is_o = fresh_bool('key_is_o')
-    replaced = fresh_bool('replaced')
+    o = fresh('o')  # Constant decomposition (constant case).
+    key_is_o = fresh_bool('key_is_o')  # The value is {o} itself.
+    replaced = fresh_bool('replaced')  # ArrayLength replaced (other cases).
     replacement_is_constant = fresh_bool('replacement_is_constant')
-    r = fresh('r')
+    r = fresh('r')  # The replacement's value, if a constant.
     key_is_constant = If(constant_case, key_is_o,
                          And(replaced, replacement_is_constant))
     key = If(constant_case, o, r)
@@ -924,17 +936,8 @@ def check_min_length_keys():
         results.append(False)
         return
     has_dcheck = min_length_form() == 'dcheck'
-    constant_case = fresh_bool('constant_case')
-    o = fresh('o')  # Constant decomposition (constant case).
-    key_is_o = fresh_bool('key_is_o')  # The value is {o} itself.
-    replaced = fresh_bool('replaced')  # ArrayLength replaced (other cases).
-    replacement_is_constant = fresh_bool('replacement_is_constant')
-    r = fresh('r')  # The replacement's value, if a constant.
-    key_is_constant = If(constant_case, key_is_o,
-                         And(replaced, replacement_is_constant))
-    key = If(constant_case, o, r)
-    assumptions = [Implies(constant_case, ULT(o, bv(K_MAX_ARRAY_LENGTH))),
-                   key_is_constant]
+    assumptions, key_is_constant, key = length_key_model()
+    assumptions.append(key_is_constant)
     conclusion = ULT(key, bv(K_MAX_ARRAY_LENGTH))
     if has_dcheck:
         prove('W8 MinLength: constant length keys are below 2^30',
@@ -987,6 +990,7 @@ def check_inventory():
 def refute(name, assumptions, conclusion):
     # The conclusion does NOT follow from the assumptions: there is a
     # counterexample. Documents why the code excludes a case.
+    if skipped(name): return
     start = time.time()
     s = SolverFor('QF_BV')
     s.add(*assumptions, Not(conclusion))
@@ -1041,7 +1045,6 @@ def main():
     check_loop_bound()
     check_merge_bound()
     check_non_strict()
-    check_constant_length()
     check_not_equal_to_constant()
     check_decreasing_induction()
     check_truncated_addition()

@@ -2,17 +2,17 @@
 
 This is a Rocq (Coq 8.20) formalization of the soundness argument of the
 analysis in V8's Turboshaft Wasm bounds check elimination
-(`src/compiler/turboshaft/wasm-bounds-check-elimination-reducer.{h,cc}`,
-branch `bce-loop-ideas`, commit `60f7a3c58ab`, whose comments state the
-conditions used here since `a0dc7a91d88`). It covers the
+(`src/compiler/turboshaft/wasm-bounds-check-elimination-reducer.{h,cc}`),
+as of the CL series (branch `bce-series-v3`, commit `e5eb75d2633`), whose
+comments state the conditions used here. It covers the
 part of the argument that is not arithmetic: why a fact recorded at a
 program point still holds at the later points where the analysis uses
 it. The arithmetic of each rule is checked separately with Z3 (see
 "Z3 checks" below). Here it stays abstract.
 
 This repository also holds the other checks of the analysis that are not
-part of V8: the Z3 scripts (`z3/`), which follow the CL series (branch
-`bce-series-v3`, commit `e5eb75d2633`), the planted-bug driver
+part of V8: the Z3 scripts (`z3/`), which follow the same commit, the
+planted-bug driver
 (`planted-bugs/`), which measures how well V8's random tests find bugs,
 and a probe of the pipeline (`probes/`).
 
@@ -149,7 +149,8 @@ Supporting results:
   when it processes a block's operations in order.
 - `justified_at_seq`: the facts recorded at one point can be justified in
   sequence: later phis of a loop header use facts recorded for earlier
-  ones (see the comment of `ProcessLoopHeader`).
+  ones (see the comment of `ProcessLoopHeader`). For facts shown by
+  induction, see `phi_fact_justified_with` (Milestone 2).
 - `A_mono`: adding (ghost) facts to `R` only adds known facts, such as
   induction invariants stronger than the facts the analysis records (see
   the comment of `ProcessLoopHeader`).
@@ -183,9 +184,20 @@ the per-edge obligations to statements about values only
 canonical term, then `F` holds in `en'`. With `tn = i + c`, these are the
 Z3 lemmas ([induction-constant], [induction-not-equal],
 [induction-decreasing], ...). This is the argument of the comment of
-`ProcessLoopHeader`: "The value of {i} they tested is the current one,
-since the header, where {i} is defined, is not executed again before the
-back edge."
+`ProcessLoopHeader`: the conditions "held when they were tested, and still
+hold at the back edge, as their operands are not computed again in
+between: they are computed in dominators of the branch, and the header,
+where {i} is defined, is not executed again before the back edge".
+
+`phi_fact_justified_with` generalizes it to obligations
+(`arrival_obligation_with E`) that may also use, in `en'`, facts `E`
+recorded at the header before `F`, provided these are justified. This
+is how later phis of the header use facts recorded for earlier ones (the
+comment of `ProcessLoopHeader`): the bound `i + [0, r - 1] < l` of
+`RecordLoopBound` uses the length alias, and the forward edge of a
+decreasing phi uses a length alias or a min length recorded at the
+header (`EntryLowerBoundOfStart`). `phi_fact_justified` is the case
+where `E` is empty (`arrival_obligation_with_weaken`).
 
 ### Milestone 3: canonical values (`Canonical.v`)
 
@@ -239,6 +251,9 @@ alias fact `Fa` has leaves `phi` and the leaves of `ty`, and holds when
 - `alias_justified`: `Fa` is locally justified at `h`.
 - `justified_using_alias`: a fact recorded at the header after the alias
   may use the alias at the same time.
+- `phi_fact_justified_using_alias`: the same for a fact about a loop phi
+  of the header, shown by induction (`phi_fact_justified_with` with
+  `E = {Fa}`), as in `RecordLoopBound` and `ProcessDecreasingInduction`.
 - `alias_sound`: end to end. If the other recorded facts satisfy the
   leaves condition and are justified, then the alias holds at every point
   dominated by `h`.
@@ -256,6 +271,7 @@ alias fact `Fa` has leaves `phi` and the leaves of `ty`, and holds when
 | `ident` operations | `WasmTypeCast`, `AssertNotNull`, `WasmTypeAnnotation`, load-elimination replacements |
 | pure operations | `WordBinop`, `Shift`, `Change`, `Constant`, `ArrayLength`, `TaggedBitcast` of Smis |
 | `edge_ok`, `phi_fact_justified` | the induction arguments in the comments of `ProcessLoopHeader` and `ProcessDecreasingInduction` |
+| `phi_fact_justified_with`, `phi_fact_justified_using_alias` | facts recorded at the header for earlier phis, used by later ones (`RecordLoopBound`, `ProcessDecreasingInduction`, `EntryLowerBoundOfStart`) |
 | `alias_fwd` | the path argument in the comment of `TryResolveMergeBound` |
 | abstract `tf_pred`, `Excluded`, `alias_arith`, the obligations | the Z3 lemmas |
 
@@ -285,11 +301,20 @@ alias fact `Fa` has leaves `phi` and the leaves of `ty`, and holds when
   - branch targets have a single predecessor (edge-split form), which is
     implicit in modeling branch conditions as facts recorded at the target;
   - phis are defined at the first point of their block, and have one
-    input per incoming edge.
+    input per incoming edge;
+  - a block has at most one edge from each predecessor (edge-split form
+    again: the successors of a block with several successors have a
+    single predecessor). The phi semantics (`phi_sem`) identify an edge
+    with its source point.
 - **Pure operations must be deterministic functions of their inputs'
   values at the time they execute.** This is why `TaggedBitcast` of a
   heap reference (which a moving GC can change) is a leaf, and why
-  `ArrayLength` is pure (array lengths never change).
+  `ArrayLength` is pure (array lengths never change). Their arguments are
+  defined at dominators of their point (`op_ssa`), possibly at the same
+  point: then pure operations of one point that depend on each other in a
+  cycle would make `pure_sem` unsatisfiable, and the theorems vacuous.
+  Turboshaft does not produce such graphs (each operation is its own
+  point).
 - **The transformation is not modeled.** The theorems are about the
   analysis on the input graph: every fact the analysis uses holds in every
   execution of that graph. Removing redundant traps, and the fallback
@@ -303,7 +328,30 @@ alias fact `Fa` has leaves `phi` and the leaves of `ty`, and holds when
   fully unfolded term wherever it is computed, and two operations with the
   same key have the same full unfolding, up to commutative swaps. The full
   unfolding is a `canon` derivation, so the C++ identification is covered
-  by `same_canonical_value`. This argument is not mechanized.
+  by `same_canonical_value`. Two cases need more care:
+  - **Truncation keys.** When no truncation of a 64-bit value `X` has
+    been seen, `TruncationKey` makes the canonical value `cX` of `X` the
+    representative of the key of `trunc(X)`. The same `OpIndex` then
+    denotes `X` in some keys and `trunc(X)` in others, so an `OpIndex`
+    alone does not determine a term. What does is the `OpIndex` and the
+    representation of its position: the options of each structural key
+    give the representations of its inputs (`WordBinop` and `Shift` their
+    `rep`, the right side of a shift being 32-bit, `Change` and
+    `TaggedBitcast` their source representation), and the keys of facts
+    (bases, lengths, aliases) are 32-bit values. A 64-bit `OpIndex` in a
+    32-bit position can only come from `TruncationKey`, and then denotes
+    `trunc(X)` for the unique `X` whose canonical value it is. The
+    argument above holds with terms indexed by representation.
+  - **Existing truncations.** The base found by `ExistingTruncation` (in
+    `DecomposeIndex`) may be computed in another branch, so it does not
+    dominate the point where it is used. It is a truncation of a value
+    with the same canonical value, so the same term, as the 64-bit input
+    of the index, which dominates the use. It is only used through its
+    canonical value, and decomposed through the structure of its input,
+    which unfolds that term: the term's leaves dominate the use, as
+    `canon` requires. The `OpIndex` itself is only a name.
+
+  This argument is not mechanized.
 
 ## Z3 checks (`z3/`)
 
@@ -311,7 +359,9 @@ Install the solver with `pip install -r requirements.txt` (in a venv).
 
 - `check-z3-lemmas.py <header>` checks the lemmas written in the comments
   of `wasm-bounds-check-elimination-reducer.h`: each one must be
-  unsatisfiable, and its assumptions satisfiable.
+  unsatisfiable, and its assumptions satisfiable. About 1 minute. Like
+  `check-z3-decisions.py`, it exits with a non-zero status when a check
+  fails (or when it finds no lemma).
 - `check-z3-decisions.py <v8 dir> [--from <name>]` checks the code that
   applies the lemmas. The decision functions of the analysis are
   transcribed as z3py functions over 32-bit bitvectors. It first checks
@@ -399,6 +449,7 @@ tests do not run the pipeline, and mjsunit tests only see results.
   concrete.
 - **Model trap and branch semantics.** That would discharge the
   justification of condition facts.
-- **Mechanize the representative / depth-limit argument** (see above).
+- **Mechanize the representative / depth-limit argument** (see above),
+  including truncation keys.
 - **Model the transformation.** Trap removal and fallback sequences, with
   a simulation argument.

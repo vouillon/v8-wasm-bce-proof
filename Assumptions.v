@@ -8,6 +8,8 @@ Print Assumptions Canonical.canon_sound.
 Print Assumptions Canonical.same_canonical_value.
 Print Assumptions Canonical.known_fact_on_ssa_values.
 Print Assumptions Induction.phi_fact_justified.
+Print Assumptions Induction.phi_fact_justified_with.
 Print Assumptions Alias.alias_leaves_ok.
 Print Assumptions Alias.alias_justified.
+Print Assumptions Alias.phi_fact_justified_using_alias.
 Print Assumptions Alias.alias_sound.
