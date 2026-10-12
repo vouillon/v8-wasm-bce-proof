@@ -3,7 +3,7 @@
 This is a Rocq (Coq 8.20) formalization of the soundness argument of the
 analysis in V8's Turboshaft Wasm bounds check elimination
 (`src/compiler/turboshaft/wasm-bounds-check-elimination-reducer.{h,cc}`),
-as of the CL series (branch `bce-series-v3`, commit `e5eb75d2633`), whose
+as of the CL series (branch `bce-series-v3`, commit `d3a54df1365`), whose
 comments state the conditions used here. It covers the
 part of the argument that is not arithmetic: why a fact recorded at a
 program point still holds at the later points where the analysis uses
@@ -503,11 +503,10 @@ changes. The sets:
 - `dchecks`: checks that seem redundant, turned into DCHECKs, to see
   whether they can fail.
 
-Results on the CL series (`bce-series-v3`, `e5eb75d2633`), October 2026,
-with the random test extended as described below (to be folded into the
-series; until then, `planted-bugs/generator-extension.diff` applies to
-`test/mjsunit/wasm/bounds-check-elimination-loops.js` at that commit),
-each finding checked against the baseline: all 44 observable
+Results on the CL series (`bce-series-v3`, `d3a54df1365`), October 2026,
+whose random test includes the extension described below (the reducer is
+the same as in the previous head, `e5eb75d2633`), each finding checked
+against the baseline: all 44 observable
 planted bugs are found within the default 4-minute budget (8 workers),
 most within seconds, and `bounds-check-elimination.js` finds 15 of them
 too. Find times vary a lot between runs, and with the load of the
