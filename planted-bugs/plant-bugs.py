@@ -11,7 +11,7 @@
 # control entry "(original)" says whether the original passes
 # bounds-check-elimination.js.
 # Usage: plant-bugs.py [--set loops|persistence|truncation|narrowing|guards|
-#                             emission|dchecks]
+#                             emission|unobservable|dchecks]
 #                      [names...]
 # Without --set, named bugs are looked up in all the sets, and with no
 # names, the loops set runs.
@@ -23,9 +23,11 @@
 # comparisons and the reading of 64-bit values as their truncations
 # (bce-loop-ideas, 7c94e0ee3b6). The "guards" set targets the guards of
 # fallback sequences, and the "emission" set how the reducer emits them,
-# which is not checked with Z3. The "dchecks" set replaces checks that seem
-# redundant by DCHECKs: one that is "found" is not redundant (the DCHECK
-# fails, in unreachable code with contradictory facts for instance).
+# which is not checked with Z3. The "unobservable" set holds bugs that no
+# test can observe (see UNOBSERVABLE_MUTANTS), which no other set runs.
+# The "dchecks" set replaces checks that seem redundant by DCHECKs: one
+# that is "found" is not redundant (the DCHECK fails, in unreachable code
+# with contradictory facts for instance).
 import ctypes, json, multiprocessing, os, random, signal, subprocess, sys, time
 
 # Kills a child process (d8) when its parent (a worker) dies: terminating
@@ -74,14 +76,6 @@ MUTANTS = [
     # FindNotEqualBound: only {i != x} needed after unrolling.
     ('unrolled-tests', 'if (candidate.offsets != all_offsets) continue;',
      'if ((candidate.offsets & 1) == 0 && all_offsets != 0) continue;'),
-    # FindNotEqualBound: {x} not required to be loop-invariant. Possibly
-    # not observable: EntryLowerBound only finds a lower bound for a
-    # constant, or from conditions dominating the loop entry, which cannot
-    # refer to a value computed in the loop (unless it has the same
-    # canonical value as one computed before it, which is then invariant).
-    ('invariant-x',
-     '!Dominates(&graph_.Get(graph_.BlockOf(candidate.x_value)), forward)) {',
-     'false) {'),
     # RecordLoopBound: offsets 0 to r instead of 0 to r - 1.
     ('loop-bound-off-by-one',
      'uint32_t last = length->reduction - 1;\n'
@@ -135,9 +129,6 @@ PERSISTENCE_MUTANTS = [
     ('commutative-all',
      'if (WordBinopOp::IsCommutative(binop.kind) && right < left) {',
      'if (right < left) {'),
-    # CanonicalValue: the bitcast of any reference (only observable with
-    # a moving GC).
-    ('bitcast-smi', '!IsKnownSmi(bitcast.input())) {', 'false) {'),
     # CanonicalValue: phis, loads of struct fields and of array elements
     # with the same inputs are the same value.
     ('phi-structural', BITCAST, STRUCTURAL_PHI + BITCAST),
@@ -203,9 +194,6 @@ NARROWING_MUTANTS = [
     # Any extension on the right side, including a sign extension.
     ('narrow-any-change', '.TryCast<Opmask::kChangeUint32ToUint64>();',
      '.TryCast<ChangeOp>();'),
-    # A narrowed comparison eliminates a trap.
-    ('narrowed-trap-eliminated', 'reduction == 0 && !relation->narrowed;',
-     'reduction == 0;'),
     # The value standing for {trunc(X)} is used as a truncation (and so
     # as an index, possibly by a guard).
     ('truncation-placeholder',
@@ -254,14 +242,6 @@ GUARD_MUTANTS = [
     # guard.
     ('coalesce-keeps-length',
      '      array_length_ = other.array_length_;\n', '', HEADER),
-    # ... or the facts known at the later start. This breaks the invariant
-    # checked by check-z3-decisions.py ("Coalesce: invariant"), but seems
-    # unobservable: the guard computed is the same (see the README).
-    ('coalesce-keeps-known',
-     '      known_offsets_ = other.known_offsets_;\n', '', HEADER),
-    ('coalesce-keeps-non-negative',
-     '      non_negative_offsets_ = other.non_negative_offsets_;\n', '',
-     HEADER),
 ]
 
 # Bugs in the emission of fallback sequences by the reducer (bce-series-v3),
@@ -292,6 +272,42 @@ EMISSION_MUTANTS = [
      '__ ChangeUint32ToUint64(length))),',
      '    GOTO_IF_NOT(LIKELY(__ Uint64LessThanOrEqual(end, '
      '__ ChangeUint32ToUint64(length))),', HEADER),
+]
+
+# Bugs that no test can observe, each with the reason, kept out of the
+# other sets so that they cost no fuzzing time and do not count as misses.
+# They document what the random tests cannot check; a change of the
+# analysis may make one observable, which then belongs in another set.
+UNOBSERVABLE_MUTANTS = [
+    # FindNotEqualBound: {x} not required to be loop-invariant.
+    # EntryLowerBound only finds a lower bound for a constant, or from
+    # conditions dominating the loop entry, which cannot refer to a value
+    # computed in the loop (unless it has the same canonical value as one
+    # computed before it, which is then invariant).
+    ('invariant-x',
+     '!Dominates(&graph_.Get(graph_.BlockOf(candidate.x_value)), forward)) {',
+     'false) {'),
+    # CanonicalValue: the bitcast of any reference. Only observable with a
+    # moving GC, between two bitcasts of the same reference used as
+    # indices, which the tests do not generate. (The input is never
+    # invalid: a condition that is always false, which the compiler does
+    # not see, so that the break is not unreachable code and IsKnownSmi is
+    # still used.)
+    ('bitcast-smi', '!IsKnownSmi(bitcast.input())) {',
+     '!IsKnownSmi(bitcast.input()) &&\n'
+     '          !bitcast.input().valid()) {'),
+    # A narrowed comparison eliminates a trap. The condition of a bounds
+    # check trap is a 32-bit comparison, never a narrowed 64-bit one.
+    ('narrowed-trap-eliminated', 'reduction == 0 && !relation->narrowed;',
+     'reduction == 0;'),
+    # Coalesce keeps the facts known at the later start. This breaks the
+    # invariant checked by check-z3-decisions.py ("Coalesce: invariant"),
+    # but the guard computed is the same (see the README).
+    ('coalesce-keeps-known',
+     '      known_offsets_ = other.known_offsets_;\n', '', HEADER),
+    ('coalesce-keeps-non-negative',
+     '      non_negative_offsets_ = other.non_negative_offsets_;\n', '',
+     HEADER),
 ]
 
 # Checks that seem redundant, turned into DCHECKs.
@@ -421,7 +437,7 @@ def main():
     sets = {'loops': MUTANTS, 'persistence': PERSISTENCE_MUTANTS,
             'truncation': TRUNCATION_MUTANTS, 'narrowing': NARROWING_MUTANTS,
             'guards': GUARD_MUTANTS, 'emission': EMISSION_MUTANTS,
-            'dchecks': DCHECK_MUTANTS}
+            'unobservable': UNOBSERVABLE_MUTANTS, 'dchecks': DCHECK_MUTANTS}
     if args[:1] == ['--set']:
         mutants = sets[args[1]]
         args = args[2:]

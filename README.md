@@ -466,7 +466,7 @@ Install the solver with `pip install -r requirements.txt` (in a venv).
 
 ## Planted bugs (`planted-bugs/`)
 
-`plant-bugs.py [--set loops|persistence|truncation|narrowing|guards|emission|dchecks]
+`plant-bugs.py [--set loops|persistence|truncation|narrowing|guards|emission|unobservable|dchecks]
 [names...]` plants bugs in the analysis (one-line edits of the source,
 restored at the end), rebuilds `d8` for each one, and measures how long
 the random loop test (`test/mjsunit/wasm/bounds-check-elimination-loops.js`)
@@ -478,10 +478,10 @@ results go (`./plant-bugs-results`). An edit that no longer matches the
 source is reported, and must be updated. At the end, on the rebuilt
 original, the driver runs each seed that found a bug again: one that also
 fails there (`"baseline": "fails"`) did not find the bug. It also records
-whether the original passes `bounds-check-elimination.js`. The results
-below predate this control. The driver restores the source on an
-interrupt or a `SIGTERM`. It stops if someone else changes the edited
-files during a run, without overwriting their changes. The sets:
+whether the original passes `bounds-check-elimination.js`. The driver
+restores the source on an interrupt or a `SIGTERM`. It stops if someone
+else changes the edited files during a run, without overwriting their
+changes. The sets:
 
 - `loops`: the loop rules (induction, not-equal bounds, entry lower
   bounds, length aliases);
@@ -496,46 +496,79 @@ files during a run, without overwriting their changes. The sets:
   fallback code of another (`in_fallback_code_`), fallback code without
   its last covered trap, and guards accepting an index equal to the
   length;
+- `unobservable`: bugs that no test can observe, each with the reason
+  in `plant-bugs.py`. No other set includes them, so that they cost no
+  fuzzing time and do not count as misses. A change of the analysis may
+  make one observable, which then belongs in another set;
 - `dchecks`: checks that seem redundant, turned into DCHECKs, to see
   whether they can fail.
 
-Results on the CL series (`bce-series-v3`, `e5eb75d2633`), October 2026:
-39 of the 42 planted bugs are found, most within seconds (8 workers). Three
-of them (`wide-sub-sign`, `narrow-any-change`, `coalesce-keeps-offset`)
-take minutes, and may or may not be found within the default 4-minute
-budget: they were found on v2 within it, missed on a first v3 run, and
-found in 1 to 5 minutes in a second run with `BUDGET=900`. Removing the
-shape added in v3 (`truncatedLengthStatements`) did not make them easier
-to find, so this is variance, not a regression. The others: `invariant-x`
-and `narrowed-trap-eliminated` seem unobservable (a check implied by
-others, and a narrowed relation that can never be the condition of an
-array bounds check), and `bitcast-smi` does not build (and would need a
-moving GC). The `dchecks` set (run on v2) showed that the three checks
-that hold when facts hold are still needed in unreachable code, where
-facts may contradict each other.
+Results on the CL series (`bce-series-v3`, `e5eb75d2633`), October 2026,
+with the random test extended as described below (to be folded into the
+series; until then, `planted-bugs/generator-extension.diff` applies to
+`test/mjsunit/wasm/bounds-check-elimination-loops.js` at that commit),
+each finding checked against the baseline: all 44 observable
+planted bugs are found within the default 4-minute budget (8 workers),
+most within seconds, and `bounds-check-elimination.js` finds 15 of them
+too. Find times vary a lot between runs, and with the load of the
+machine: the reliable measure is the number of failing seeds over a
+fixed range of seeds, for a mutant built once. Some bugs remain rare:
+`small-bound-unsigned` and `coalesce-keeps-length` fail on 1 seed in
+240, `excluded-no-holds` and `merge-off-by-one` on about 1 in 100.
 
-The `emission` set and two more `guards` mutants were run later on the
-same commit. The five `emission` mutants are found within seconds, and
-all but `guard-le` by `bounds-check-elimination.js` too. The first two
+The extension adds two shapes, each generated from a separate random
+sequence (`separately`), so that the other functions and statements are
+the same as before for a given seed: on the seeds where the previous
+test found `const-limit`, `merge-off-by-one`, `excluded-no-holds`,
+`small-bound-unsigned`, `not-equal-length`, `unrolled-tests` and
+`coalesce-keeps-length`, the extended one finds them too (for the last
+four, over 240 seeds, it fails on exactly the same seeds).
+
+- `narrow-any-change` and `wide-sub-sign` used to take minutes, and were
+  sometimes missed: they are only observable with
+  `--no-wasm-loop-peeling` (chosen in 30% of the runs). With loop
+  peeling, its machine optimizations fold `sext(c)` for a constant `c`
+  into a 64-bit constant, and turn `Y - c` into `Y + (-c)`, before the
+  analysis, which then never sees the forms these mutants misread. Each
+  canonical function now ends with `zext(p) <u sext(0x80000000)` or
+  `Y - c <u zext(a.length - r)`, followed by accesses that rely on them
+  (last, as these accesses often trap). With loop peeling disabled, the
+  two mutants fail on about 30% and 48% of the seeds, instead of none
+  in 64.
+- `const-limit` (an inclusive constant bound treated as strict) failed
+  on about 0.4% of the seeds: it is only observable when `i` reaches
+  the bound `2^31 - step` of `i <= x`, overflows, and the loop goes on
+  with a signed comparison to a signed check of `i` itself. Each loop
+  function now ends with a loop starting close to 2^31, with the
+  largest safe constant bound for its comparison or the next one, whose
+  body starts with a signed check of `i + d` for `d <= 0`. It now fails
+  on about 14% of the seeds.
+
+The five `emission` mutants are found within seconds. The first two
 abort while the reducer emits code (the kept log tails only show the
 stack, presumably that of the DCHECK that each sequence is emitted
-once).
+once). The `dchecks` set (run on v2) showed that the three checks that
+hold when facts hold are still needed in unreachable code, where facts
+may contradict each other.
+
+The `unobservable` set holds five mutants. `invariant-x` (a check implied
+by others), `narrowed-trap-eliminated` (a narrowed relation is never the
+condition of an array bounds check) and `bitcast-smi` (which needs a
+moving GC, and indices computed from references) were never found.
 `coalesce-keeps-known` and `coalesce-keeps-non-negative`, which
 `check-z3-decisions.py` finds, are not found in 15 minutes each
-(`BUDGET=900`, about 1,400 and 900 runs), and seem unobservable: the
-guard they compute is the same. The guard moves to the start of the
-earlier sequence, before the later one's first trap. The extreme offsets
-of the merged range are those of traps after that later start, which
-extend the known range when they are checked, so they are not in the
-known range there. The extra facts from between the two starts come
-from covered traps or, for non-negative offsets (keyed by the base
-alone), from checks of other arrays. The latter are folded into the
-known range of each later check ([non-negative-and-check]), which makes
-the trap that would extend the range downward redundant
-(`coalesce-keeps-non-negative-repro.js` in the bench tried this).
-These two mutants are thus caught only by the Z3 invariant, which is
-stronger than what the guard needs. In total, 44 of the 49 planted bugs
-are found.
+(`BUDGET=900`, about 1,400 and 900 runs): the guard they compute is the
+same. The guard moves to the start of the earlier sequence, before the
+later one's first trap. The extreme offsets of the merged range are
+those of traps after that later start, which extend the known range when
+they are checked, so they are not in the known range there. The extra
+facts from between the two starts come from covered traps or, for
+non-negative offsets (keyed by the base alone), from checks of other
+arrays. The latter are folded into the known range of each later check
+([non-negative-and-check]), which makes the trap that would extend the
+range downward redundant (`coalesce-keeps-non-negative-repro.js` in the
+bench tried this). These two mutants are thus caught only by the Z3
+invariant, which is stronger than what the guard needs.
 
 ## Probes (`probes/`)
 

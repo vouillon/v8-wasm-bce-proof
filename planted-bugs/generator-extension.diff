@@ -1,0 +1,198 @@
+diff --git a/test/mjsunit/wasm/bounds-check-elimination-loops.js b/test/mjsunit/wasm/bounds-check-elimination-loops.js
+index 15ad8928680..f387cc2b14f 100644
+--- a/test/mjsunit/wasm/bounds-check-elimination-loops.js
++++ b/test/mjsunit/wasm/bounds-check-elimination-loops.js
+@@ -48,6 +48,21 @@ function pick(list) {
+ function chance(n) {
+   return random(n) == 0;
+ }
++// Runs {f} with a separate random sequence, so that what is generated
++// after it is the same as without it. The sequence starts from a
++// nonlinear mix of the seed: xorshift is linear, so that with
++// {saved ^ k}, each draw would be the corresponding draw of the main
++// sequence xor a fixed value, and the draws of {f} would depend on those
++// that follow it.
++function separately(f) {
++  let saved = seed;
++  seed = Math.imul(saved ^ 0x5bd1e995, 0x9e3779b1) | 0 || 1;
++  try {
++    return f();
++  } finally {
++    seed = saved;
++  }
++}
+ 
+ // Locals: parameters a, b (arrays), p, q, then i (loop variable), x (its
+ // bound), j (inner loop variable), count and jcount (iterations left in
+@@ -275,7 +290,10 @@ function randomStatements(iv, labels, depth, guarded_only = false) {
+ function randomFunction() {
+   let state = {};
+   let statements = randomLoopFunction(state);
+-  if (!state.phi || chance(2)) return statements;
++  // Last, as it may return, and separately, so that adding it changes
++  // nothing else.
++  let boundary = separately(() => randomLoopFunction({}, true));
++  if (!state.phi || chance(2)) return [...statements, ...boundary];
+   let [setX, ...loop] = statements;
+   return [
+     setX,
+@@ -299,6 +317,7 @@ function randomFunction() {
+                then: [access('a', constant(k))], else: []}];
+     })(),
+     ...randomStatements('i', {}, 0),
++    ...boundary,
+   ];
+ }
+ 
+@@ -324,10 +343,17 @@ const kMutations = ['init', 'step', 'bound', 'op', 'inline', 'guard',
+ // constant, compared in any way: {i} then overflows within a few
+ // iterations when the bound does not prevent it.
+ // {state.phi} is set when the bound is a merge phi.
+-function randomLoopFunction(state) {
++// With {boundary}, the loop is a while loop starting close to 2^31, whose
++// constant bound is the largest one for which {i + step} cannot overflow,
++// or the next one: {i} then overflows within a few iterations, and the
++// test still holds for a signed comparison. Its body starts with a signed
++// check of {i} that relies on {i} being non-negative. This is rare
++// otherwise.
++function randomLoopFunction(state, boundary = false) {
+   let mutations = new Set(kMutations.filter(() => chance(10)));
+-  let kind = pick(['while', 'while', 'ne', 'ne', 'ne', 'dowhile']);
+-  let high = kind == 'while' && chance(6);
++  let kind = boundary ? 'while'
++                      : pick(['while', 'while', 'ne', 'ne', 'ne', 'dowhile']);
++  let high = boundary || (kind == 'while' && chance(6));
+   let unroll = kind == 'ne' ? pick([1, 1, 1, 2, 2, 3, 4]) : 1;
+   let step = kind == 'ne' ? unroll : pick([1, 1, 1, 2, 3]);
+   if (mutations.has('step')) {
+@@ -343,15 +369,24 @@ function randomLoopFunction(state) {
+   let x, ops;
+   let r = pick([0, 1, 1, 2, 3]);
+   switch (mutations.has('bound') ? 'wild'
++          : boundary ? 'highConst'
+           : high ? pick(['highConst', 'highLen'])
+           : pick(['len', 'len', 'len', 'const',
+                   ...(kind == 'ne' ? ['phi', 'phi'] : [])])) {
+     case 'highConst': {
+-      let c = pick([0x80000000 - step, 0x7fffffff - step, 0x80000001 - step,
+-                    0x7fffffff]) | 0;
++      let c;
++      if (boundary) {
++        // The largest bound for the comparison, or the next one.
++        ops = [pick(['lt_s', 'le_s', 'lt_u', 'le_u'])];
++        let strict = ops[0].startsWith('lt');
++        c = (0x80000000 - step - (strict ? 0 : 1) + random(2)) | 0;
++      } else {
++        c = pick([0x80000000 - step, 0x7fffffff - step, 0x80000001 - step,
++                  0x7fffffff]) | 0;
++        ops = ['lt_s', 'le_s', 'lt_u', 'le_u'];
++      }
+       x = constant(c);
+       if (!mutations.has('init')) init = (c - step * random(4)) | 0;
+-      ops = ['lt_s', 'le_s', 'lt_u', 'le_u'];
+       break;
+     }
+     case 'highLen':
+@@ -400,6 +435,16 @@ function randomLoopFunction(state) {
+   if (kind == 'while') {
+     body.push(brIf('out', negatedRelation(op, local('i'), bound)));
+   }
++  if (boundary) {
++    // A signed check of {i + d} for {d <= 0}, a bounds check if {i} is
++    // non-negative: once {i} has overflowed, it is negative.
++    let arr = chance(4) ? 'b' : 'a';
++    let d = pick([0, 0, -1]);
++    let r = pick([0, 1]);
++    body.push({k: 'if', c: relation(r == 0 ? 'lt_s' : pick(['lt_s', 'le_s']),
++                                    index(local('i'), d), lengthMinus(arr, r)),
++               then: burst(arr, local('i'), d), else: []});
++  }
+   let skippedTest = mutations.has('netest') ? random(unroll + 1) : -1;
+   for (let k = 0; k < unroll; k++) {
+     let statements = randomStatements('i', {out: 'out'}, 0, high);
+@@ -835,13 +880,6 @@ function randomWide() {
+   }
+ }
+ 
+-// A 64-bit comparison {X < zext(a.length - r)} (or {<=}), unsigned, as
+-// languages with 64-bit integers compare indices with lengths: it shows
+-// that {X} is less than 2^32, and so is the same as the comparison of
+-// its truncation {e} ([narrowed-comparison]). Accesses at {e + k} follow
+-// when it holds, in a branch, or after leaving a block when it does not
+-// hold (as wasm_of_ocaml does with {X >= zext(a.length - 1)}). Near misses:
+-// signed comparisons, and sign-extended lengths.
+ // An array {c} allocated with a truncated 64-bit length {trunc(n)} in a
+ // branch, while the other branch computes {trunc(n)} for an access. Both
+ // truncations have the same canonical value, but only the one in the
+@@ -876,6 +914,13 @@ function truncatedLengthStatements(arr) {
+                     : {k: 'if', c, then: allocating, else: other}];
+ }
+ 
++// A 64-bit comparison {X < zext(a.length - r)} (or {<=}), unsigned, as
++// languages with 64-bit integers compare indices with lengths: it shows
++// that {X} is less than 2^32, and so is the same as the comparison of
++// its truncation {e} ([narrowed-comparison]). Accesses at {e + k} follow
++// when it holds, in a branch, or after leaving a block when it does not
++// hold (as wasm_of_ocaml does with {X >= zext(a.length - 1)}). Near misses:
++// signed comparisons, and sign-extended lengths.
+ function narrowedStatements(arr, in_loop) {
+   let {X, e} = randomWide();
+   if (chance(4)) {
+@@ -931,6 +976,47 @@ function narrowedCheck(X, bound, op, accesses, in_loop) {
+   }
+ }
+ 
++// Narrowed comparisons in forms that only reach the analysis when loop
++// peeling is disabled: the machine optimizations of the peeling phase
++// fold {sext(c)} for a constant {c} into a 64-bit constant, and turn
++// {Y - c} into {Y + (-c)}. Their reading is thus only tested in runs with
++// --no-wasm-loop-peeling, which need them to be frequent.
++// - {X <u sext(0x80000000)} holds for {X = zext(p)} with a negative {p}:
++//   it must not be narrowed, since {trunc(X)} may then be negative, and
++//   the signed check {trunc(X) + d <s a.length} that follows is then not
++//   a bounds check.
++// - {Y - c <u zext(a.length - r)} shows that the offsets {-c} to {r - c}
++//   of {trunc(Y)} are within bounds. Accesses at offsets {c} to {r + c}
++//   are near misses.
++// They come last in a function, as their accesses often trap (the
++// accesses of a negative {p}, and the near misses).
++function unpeeledNarrowedStatements(arr) {
++  let v = pick([local('p'), local('q'),
++                binop('and', local('p'), constant(15))]);
++  if (chance(2)) {
++    let d = pick([0, 0, 1, -1]);
++    let X = extend(v, false);
++    if (d != 0) X = binop64('add', X, const64(d));
++    let e = index(v, pick([0, 0, 1, 2]) + d);
++    return [{k: 'if',
++             c: {k: 'cmp64', op: 'lt_u', l: X,
++                 r: extend(constant(0x80000000), true)},
++             then: [{k: 'if', c: relation('lt_s', e, len(arr)),
++                     then: [access(arr, e)], else: []}],
++             else: []}];
++  }
++  let c = 1 + random(3);
++  let X = binop64('sub', extend(v, chance(2)), const64(c));
++  let r = pick([0, 1, 2]);
++  let accesses = [];
++  for (let k = 1 + random(3); k > 0; k--) {
++    let j = random(r + 1);
++    accesses.push(access(arr, index(v, chance(2) ? j - c : j + c)));
++  }
++  return narrowedCheck(X, extend(lengthMinus(arr, r), false),
++                       pick(['lt_u', 'lt_u', 'le_u']), accesses, false);
++}
++
+ // A function that computes a few base expressions several times (see
+ // {randomBaseExpression}), and accesses arrays at small offsets of them,
+ // in guarded accesses, merges and loops, possibly with stores in between.
+@@ -1065,6 +1151,9 @@ function randomCanonicalFunction() {
+                                  binop('and', local('p'), constant(15))]),
+                            chance(2))},
+     ...statements(0, false),
++    // Last, as their accesses often trap, which would skip what follows,
++    // and separately, so that adding them changes nothing else.
++    ...separately(() => unpeeledNarrowedStatements(arr)),
+   ];
+ }
+ 
