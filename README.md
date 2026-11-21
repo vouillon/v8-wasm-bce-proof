@@ -1,13 +1,16 @@
 # Soundness of Wasm bounds check elimination: a Rocq model
 
-This is a Rocq (Coq 8.20) formalization of the soundness argument of the
-analysis in V8's Turboshaft Wasm bounds check elimination
+This is a Rocq (Coq 8.20) formalization of the soundness argument of
+V8's Turboshaft Wasm bounds check elimination
 (`src/compiler/turboshaft/wasm-bounds-check-elimination-reducer.{h,cc}`),
 as of the CL series (branch `bce-series-v5`, commit `850baf5581d`), whose
 comments state the conditions used here. It covers the
 part of the argument that is not arithmetic: why a fact recorded at a
 program point still holds at the later points where the analysis uses
-it. The arithmetic of each rule is checked separately with Z3 (see
+it, how `CanonicalValue` and `TruncationKey` build their tables, and why
+the code emitted for fallback sequences behaves like the original block
+(at the level of a block, given hypotheses on the guards).
+The arithmetic of each rule is checked separately with Z3 (see
 "Z3 checks" below). Here it stays abstract.
 
 This repository also holds the other checks of the analysis that are not
@@ -37,11 +40,12 @@ non-zero status if a check fails.
 | `Loops.v` | Milestone 2: facts recorded at loop headers (per-edge obligations) |
 | `Canonical.v` | Milestone 3: pure operations, canonical terms, the GVN invariant, facts over terms |
 | `Induction.v` | Milestones 2 and 3 together: induction on a loop phi with per-edge phi semantics |
-| `Representatives.v` | Milestone 3, refined: the representatives of `CanonicalValue`, the depth limit, truncation keys |
+| `Representatives.v` | Milestone 3, refined: the representatives of `CanonicalValue`, the depth limit, truncation keys, and inductive table construction (`vbs_ok`, `vbs_inj`) |
 | `Alias.v` | Milestone 4: length aliases (`TryResolveMergeBound`) |
+| `Fallback.v` | Milestone 5: fallback sequence emission (`WasmBoundsCheckEliminationReducer`, `CloneAndInlineTrappingInstructions`) |
 | `Assumptions.v` | `Print Assumptions` of the main theorems (not part of `make all`) |
 
-All four milestones are complete. There is no `Admitted` and no axiom
+All five milestones are complete. There is no `Admitted` and no axiom
 other than `Classical_Prop.classic` (excluded middle).
 
 ## The model
@@ -256,8 +260,9 @@ representatives, the first operation found with a given structural key
   identity, or the representative of the structural key, with the
   inputs of commutative operations sorted.
 - `vbs`: the final table `values_by_structure_`, a function, so one
-  representative per key. Its properties are hypotheses, which the code
-  maintains:
+  representative per key. Its properties `vbs_ok` and `vbs_inj` are
+  hypotheses of the first section and proved as invariants of table
+  construction in the second section:
   - `vbs_ok`: a representative computed its own key from the canonical
     values of its inputs, or is the 64-bit canonical value `cX` that
     `TruncationKey` registers for the key of `trunc(cX)`;
@@ -289,6 +294,21 @@ canonical value and representation are equal wherever both are used.
 `existing_truncation`: the base found by `ExistingTruncation`, possibly
 computed in another branch, stands for the truncation of the 64-bit
 value of the index, which dominates the access.
+
+The second section of `Representatives.v` discharges the
+hypotheses `vbs_ok` and `vbs_inj` by modeling the stateful construction
+of `(canonical_values_, values_by_structure_)` by `CanonicalValue` and
+`TruncationKey` (`eval_cv`, `eval_trunc`, `table_run`, with no-overwrite
+`emplace` semantics, memoization, depth cut-offs, commutative argument
+swaps, and truncation keys):
+
+- `eval_cv_memo_local` and `dep_irrefl` (from `op_wf`): recursive calls
+  on an operation's inputs never write `canonical_values_` for the
+  operation itself;
+- `table_run_wf`, `table_run_vbs_ok`, `table_run_vbs_inj`: every run
+  from empty tables preserves `vbs_ok` and `vbs_inj`;
+- `table_run_same_representative`, `table_run_existing_truncation`:
+  end-to-end instantiations without assuming `vbs_ok` or `vbs_inj`.
 
 ### Milestone 4: length aliases (`Alias.v`)
 
@@ -322,6 +342,50 @@ alias fact `Fa` has leaves `phi` and the leaves of `ty`, and holds when
   leaves condition and are justified, then the alias holds at every point
   dominated by `h`.
 
+### Milestone 5: fallback sequence emission (`Fallback.v`)
+
+Models a basic block as a list of instructions (`Step` with arbitrary
+state side effects, unconditional `Fatal` trap, or conditional `Check`
+with a trap identity/position), and models how the code that the
+reducer emits runs (`eval_main`, `eval_fallback`, `eval_transformed`),
+with arbitrary overlapping or interleaved sequences in the same block,
+plus verifier mode (`eval_transformed_verified`). It takes three
+hypotheses, which are not instantiated from the other files:
+`redundant_sound` (argued by `Persistence.v` and `Canonical.v` with the
+Z3 lemmas), `guard_sound` (`guard_value_persists` with [covered],
+[guard-one-sided] and [guard-two-sided]) and `guard_complete`
+(`guard_value_persists` with [guard-two-sided-complete], and the Z3
+invariant that the bounds of a sequence are offsets of its guarded
+traps; `guard_complete_from_failing_check` reduces it to a check of the
+slice that fails). Under these hypotheses:
+
+```coq
+Theorem fallback_emission_sound :
+  forall st0, eval_transformed ops redundant seqs st0 = eval_orig ops st0.
+Corollary fallback_never_unreachable :
+  forall st0, eval_transformed ops redundant seqs st0 <> Stuck.
+Theorem fallback_verifier_sound :
+  forall st0,
+  eval_transformed_verified ops redundant seqs st0 = eval_orig ops st0 /\
+  eval_transformed_verified ops redundant seqs st0 <> Stuck.
+```
+
+The transformed block produces the exact same final state or traps at
+the same check after the same side effects, never reaches `Unreachable`,
+and never triggers a verifier abort (no axioms used).
+
+Two properties of the emission are built into the model rather than
+proved. No sequence is emitted within fallback code (`in_fallback_code_`):
+`eval_fallback` never starts one. And the guarded traps of a sequence are
+only skipped on executions where its guard passed, while the C++ keeps
+`guarded_traps_` as one set for the rest of the graph; the two agree
+because a sequence is emitted on the main path, and the rest of its block
+is only reached when its guard succeeds (see the comment of
+`guarded_traps_`). The model is about how the emitted code runs, not
+about whether the emitted graph is well formed: for instance, it cannot
+express an `Unreachable` emitted after a block that an unconditional trap
+already ended.
+
 ## Mapping to the C++
 
 | Model | C++ |
@@ -333,12 +397,14 @@ alias fact `Fa` has leaves `phi` and the leaves of `ty`, and holds when
 | ghost facts in `R` | raw branch conditions collected by `ForEachDominatingCondition` (`ProcessLoopHeader`, `EntryLowerBound`); induction invariants such as `i <= x` |
 | `canon x t`, `term` | `CanonicalValue` (`values_by_structure_`), `ResolveReplacements`, `ResolveAliases` |
 | `CV`, `vbs`, `U` | `CanonicalValue`, `values_by_structure_`, `TruncationKey`; `existing_truncation`: `ExistingTruncation` |
+| `eval_cv`, `eval_trunc`, `table_run` | stateful table construction of `canonical_values_` and `values_by_structure_` (`CanonicalValue`, `TruncationKey`) |
 | `ident` operations | `WasmTypeCast`, `AssertNotNull`, `WasmTypeAnnotation`, load-elimination replacements |
 | pure operations | `WordBinop`, `Shift`, `Change`, `Constant`, `ArrayLength`, `TaggedBitcast` of Smis |
 | `edge_ok`, `phi_fact_justified` | the induction arguments in the comments of `ProcessLoopHeader` and `ProcessDecreasingInduction` |
 | `phi_fact_justified_with`, `phi_fact_justified_using_alias` | facts recorded at the header for earlier phis, used by later ones (`RecordLoopBound`, `ProcessDecreasingInduction`, `EntryLowerBoundOfStart`) |
 | `alias_fwd` | the path argument in the comment of `TryResolveMergeBound` |
 | `guard_value_persists` | "for the same values of the base and of the array length, which do not change within the sequence" (comment of `FallbackInstructionSequence`) |
+| `eval_main`, `eval_fallback`, `eval_main_verified` | `WasmBoundsCheckEliminationReducer`, `MaybeInsertFallbackSequence`, `EmitFallbackSequence`, `in_fallback_code_`, `guarded_traps_`, `VerifyRedundantBoundsCheck`, `CloneAndInlineTrappingInstructions` |
 | abstract `tf_pred`, `Excluded`, `alias_arith`, the obligations | the Z3 lemmas |
 
 ## Assumptions and what is not modeled
@@ -390,26 +456,24 @@ alias fact `Fa` has leaves `phi` and the leaves of `ty`, and holds when
   because the allocation is kept until it is lowered, where its trap is
   emitted, which a `static_assert` in `RecordKnownLength` checks
   (`is_required_when_unused`).
-- **The transformation is not modeled.** The theorems are about the
-  analysis on the input graph: every fact the analysis uses holds in every
-  execution of that graph. Removing redundant traps, and the fallback
-  sequences (`FallbackInstructionSequence`), are not modeled, except for
-  the invariant of sequences and their guards, which Z3 checks (see "Z3
-  checks"), and `guard_value_persists`. The emission (cloning the
-  instructions, `in_fallback_code_`, each sequence emitted once) is
-  argued in the comments of the reducer, and exercised by the random
-  tests.
-- **Representatives and the depth limit** are modeled in
-  `Representatives.v`. What remains is the link between the hypotheses
-  on the table (`vbs_ok`, `vbs_inj`) and the code of `CanonicalValue` and
-  `TruncationKey`. These hypotheses rely on the following:
-  - a value is registered under the key it computes from its inputs, or,
-    for a 64-bit canonical value, under the key of its truncation;
-  - a value's key is computed once (memoized);
-  - the options of each structural key give the representations of its
-    inputs (`WordBinop` and `Shift` their `rep`, the right side of a shift
-    being 32-bit, `Change` and `TaggedBitcast` their source
-    representation).
+- **The transformation is modeled at the block level.** `Fallback.v`
+  proves exact outcome preservation (side effects and trap positions) and
+  unreachability of `Unreachable` for redundant-trap removal and fallback
+  sequences (overlapping or interleaved), given per-check and per-guard
+  hypotheses, which the analysis, the other files and Z3 argue for, but
+  which are not connected to them formally. Turboshaft's SSA graph
+  rewriting itself is not modeled (the copying-phase mapping and
+  variables, and the well-formedness of the emitted graph), and is
+  exercised by the random tests and debug checks.
+- **Representatives, the depth limit, and table construction** are
+  modeled in `Representatives.v`, which proves `vbs_ok`
+  and `vbs_inj` inductively from `eval_cv` and `eval_trunc`, a model of
+  the code that allows at least what the C++ does; what
+  remains is that the C++ options of each structural key determine the
+  representations of its output and inputs (`op_rep`, with `ident_rep`
+  and `comm_rep`: `WordBinop` and
+  `Shift` include `rep`, the right side of a shift being 32-bit, `Change`
+  and `TaggedBitcast` include their source and target representations).
 
   `existing_truncation` covers one step of `DecomposeIndex` through an
   existing truncation. Its chain of decompositions applies it at each
@@ -623,8 +687,5 @@ tests do not run the pipeline, and mjsunit tests only see results.
   concrete.
 - **Model trap and branch semantics.** That would discharge the
   justification of condition facts.
-- **Derive the hypotheses on representatives** (`vbs_ok`, `vbs_inj`) from
-  a model of the code of `CanonicalValue` and `TruncationKey`.
-- **Model the transformation.** Trap removal and the emission of fallback
-  sequences, with a simulation argument (their invariant and guards are
-  checked with Z3).
+- **Model Turboshaft's SSA graph rewriting** (the copying-phase mapping
+  and variables) underneath `Fallback.v`'s block-level simulation.

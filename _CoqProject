@@ -6,3 +6,4 @@ Canonical.v
 Induction.v
 Representatives.v
 Alias.v
+Fallback.v

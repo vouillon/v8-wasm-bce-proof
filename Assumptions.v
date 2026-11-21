@@ -1,4 +1,4 @@
-From BCE Require Import Graph Persistence Loops Canonical Induction Alias Representatives.
+From BCE Require Import Graph Persistence Loops Canonical Induction Alias Representatives Fallback.
 
 Print Assumptions Persistence.soundness.
 Print Assumptions Persistence.known_at_arrival.
@@ -17,3 +17,12 @@ Print Assumptions Alias.alias_sound.
 Print Assumptions Representatives.representatives_sound.
 Print Assumptions Representatives.same_representative.
 Print Assumptions Representatives.existing_truncation.
+Print Assumptions Representatives.table_run_wf.
+Print Assumptions Representatives.table_run_vbs_ok.
+Print Assumptions Representatives.table_run_vbs_inj.
+Print Assumptions Representatives.table_run_same_representative.
+Print Assumptions Representatives.table_run_existing_truncation.
+Print Assumptions Fallback.guard_complete_from_failing_check.
+Print Assumptions Fallback.fallback_emission_sound.
+Print Assumptions Fallback.fallback_never_unreachable.
+Print Assumptions Fallback.fallback_verifier_sound.
