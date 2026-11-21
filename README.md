@@ -3,7 +3,7 @@
 This is a Rocq (Coq 8.20) formalization of the soundness argument of the
 analysis in V8's Turboshaft Wasm bounds check elimination
 (`src/compiler/turboshaft/wasm-bounds-check-elimination-reducer.{h,cc}`),
-as of the CL series (branch `bce-series-v4`, commit `715e484c321`), whose
+as of the CL series (branch `bce-series-v4`, commit `4eef26d7467`), whose
 comments state the conditions used here. It covers the
 part of the argument that is not arithmetic: why a fact recorded at a
 program point still holds at the later points where the analysis uses
@@ -525,16 +525,18 @@ fixed range of seeds, for a mutant built once. Some bugs remain rare:
 240, `excluded-no-holds` and `merge-off-by-one` on about 1 in 100.
 
 These results were not measured again on `bce-series-v4`
-(`715e484c321`). Its changes bound the cost of the loop rules (the
-walk of `EntryLowerBound` is limited in blocks as well as branches, the
+(`4eef26d7467`). Its changes bound the cost of the loop rules (the walk
+of `EntryLowerBound` is limited in blocks as well as branches, the
 dominance test uses `GetCommonDominator`, and each phi of a header only
 scans the conditions that mention it), make `TryResolveMergeBound`
 reject 64-bit merges, and fix two crashes of the emission of fallback
 sequences in debug builds; it also states in the code the two
-assumptions on other phases listed above, recognizes the length
-`n + 1` of an allocation as a whole, and ends fallback sequences at
-calls. Compiled code differs from v3's in 42 of about 40,000 functions
-of the benchmarks (ocamlc, js_of_ocaml and Kotlin-compose), all of them
+assumptions on other phases listed above, recognizes the length `n + 1`
+of an allocation as a whole, ends fallback sequences at calls, and
+computes the bound `k + 1` of a condition `k <s x` in 64 bits, as the Z3
+transcription already did (`k + 1` overflowed for `k = kMaxInt`).
+Compiled code differs from v3's in 42 of about 40,000 functions of the
+benchmarks (ocamlc, js_of_ocaml and Kotlin-compose), all of them
 smaller. Every edit of `plant-bugs.py` applies to v4; `invariant-x` and
 `invariant-x-dcheck` were rewritten for the new dominance test.
 

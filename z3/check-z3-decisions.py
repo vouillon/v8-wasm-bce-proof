@@ -1,7 +1,7 @@
 # Usage: check-z3-decisions.py <v8 dir> [--from <name>]
 # With --from, the queries before the first one whose name contains
 # <name> are skipped. The whole check takes about 5 minutes. The anchors
-# are those of the CL series (branch bce-series-v4, head 715e484c321), which
+# are those of the CL series (branch bce-series-v4, head 4eef26d7467), which
 # differs from the bce-loop-ideas prototype in a few places (MinLength's
 # DCHECK, no constant on the left of 32-bit or truncated additions).
 #
@@ -148,7 +148,7 @@ ANCHORS = {
         'if (holds && CanonicalValue(condition) == x) excluded.push_back(0);',
         'excluded.push_back(static_cast<int32_t>(*k));',
         'if (!relation->is_signed() || CanonicalValue(relation->right) != x) {',
-        'static_cast<int32_t>(*k) + (relation->is_strict() ? 1 : 0);',
+        'int64_t{static_cast<int32_t>(*k)} + (relation->is_strict() ? 1 : 0);',
         'if (!lower.has_value() || bound > *lower) lower = bound;',
         'while (std::find(excluded.begin(), excluded.end(), bound) != '
         'excluded.end()) {',
@@ -185,7 +185,7 @@ ANCHORS = {
         'if (!lower.has_value() || *lower < 0) return;',
         'uint32_t v = k - n; if (v <= kMaxInt) excluded.push_back(v);',
         'if (d > 0 || d < -int64_t{kMaxArrayLength}) continue;',
-        'int64_t lower = static_cast<int32_t>(*lo) + '
+        'int64_t lower = int64_t{static_cast<int32_t>(*lo)} + '
         '(relation.is_strict() ? 1 : 0); if (lower - d >= decrement) return true;',
         'std::optional<int64_t> lower = init_lower(); '
         'if (!lower.has_value() || y > *lower) continue;',
