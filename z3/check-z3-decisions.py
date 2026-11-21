@@ -1,7 +1,7 @@
 # Usage: check-z3-decisions.py <v8 dir> [--from <name>]
 # With --from, the queries before the first one whose name contains
 # <name> are skipped. The whole check takes about 5 minutes. The anchors
-# are those of the CL series (branch bce-series-v4, head 4eef26d7467), which
+# are those of the CL series (branch bce-series-v4, head 1a1a16d2df6), which
 # differs from the bce-loop-ideas prototype in a few places (MinLength's
 # DCHECK, no constant on the left of 32-bit or truncated additions).
 #
@@ -136,6 +136,7 @@ ANCHORS = {
         'if (!init.has_value() || static_cast<int32_t>(*init) < 0) {',
         'if (step.base != value || step.offset == 0 || '
         'step.offset > kMaxArrayLength) {',
+        'if (is_signed && !inclusive && step == 1) return true;',
         'uint32_t limit = uint32_t{kMaxInt} - step + (inclusive ? 0 : 1);',
         '? static_cast<int32_t>(*constant) <= static_cast<int32_t>(limit)',
         ': *constant <= limit;',
@@ -767,6 +768,10 @@ def check_fallback_sequences():
 
 
 def check_small_bound():
+    # Any bound for {i <s x} with a step of 1 (bce-series-v4).
+    i, x = fresh('i'), fresh('x')
+    prove('IsSmallBound: any bound (signed, strict, step 1)',
+          [i >= 0, i < x], (i + 1) < 0)
     for is_signed in [False, True]:
         for inclusive in [False, True]:
             i, c, step = fresh('i'), fresh('c'), fresh('step')

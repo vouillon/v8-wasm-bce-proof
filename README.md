@@ -3,7 +3,7 @@
 This is a Rocq (Coq 8.20) formalization of the soundness argument of the
 analysis in V8's Turboshaft Wasm bounds check elimination
 (`src/compiler/turboshaft/wasm-bounds-check-elimination-reducer.{h,cc}`),
-as of the CL series (branch `bce-series-v4`, commit `4eef26d7467`), whose
+as of the CL series (branch `bce-series-v4`, commit `1a1a16d2df6`), whose
 comments state the conditions used here. It covers the
 part of the argument that is not arithmetic: why a fact recorded at a
 program point still holds at the later points where the analysis uses
@@ -525,7 +525,7 @@ fixed range of seeds, for a mutant built once. Some bugs remain rare:
 240, `excluded-no-holds` and `merge-off-by-one` on about 1 in 100.
 
 These results were not measured again on `bce-series-v4`
-(`4eef26d7467`). Its changes bound the cost of the loop rules (the walk
+(`1a1a16d2df6`). Its changes bound the cost of the loop rules (the walk
 of `EntryLowerBound` is limited in blocks as well as branches, the
 dominance test uses `GetCommonDominator`, and each phi of a header only
 scans the conditions that mention it), make `TryResolveMergeBound`
@@ -534,11 +534,17 @@ sequences in debug builds; it also states in the code the two
 assumptions on other phases listed above, recognizes the length `n + 1`
 of an allocation as a whole, ends fallback sequences at calls, and
 computes the bound `k + 1` of a condition `k <s x` in 64 bits, as the Z3
-transcription already did (`k + 1` overflowed for `k = kMaxInt`).
-Compiled code differs from v3's in 42 of about 40,000 functions of the
-benchmarks (ocamlc, js_of_ocaml and Kotlin-compose), all of them
-smaller. Every edit of `plant-bugs.py` applies to v4; `invariant-x` and
-`invariant-x-dcheck` were rewritten for the new dominance test.
+transcription already did (`k + 1` overflowed for `k = kMaxInt`). It
+also decomposes `n + base` like `base + n`, records the offsets `-c0` to
+0 of a loop phi starting at `c0 > 0` as non-negative
+(`[induction-start]`), accepts any bound `x` for `i <s x` with a step of
+1 (`[induction-strict-signed]`, and a query of `check_small_bound`), and
+keeps the traps covered by fallback sequences apart from the redundant
+traps of the analysis. Compiled code differs from v3's in 43 of about
+40,000 functions of the benchmarks (ocamlc, js_of_ocaml, Kotlin-compose
+and j2cl-box2d), all of them smaller. Every edit of `plant-bugs.py`
+applies to v4; `invariant-x` and `invariant-x-dcheck` were rewritten for
+the new dominance test.
 
 The extension adds two shapes, each generated from a separate random
 sequence (`separately`), so that the other functions and statements are
