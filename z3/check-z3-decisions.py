@@ -1,7 +1,7 @@
 # Usage: check-z3-decisions.py <v8 dir> [--from <name>]
 # With --from, the queries before the first one whose name contains
 # <name> are skipped. The whole check takes about 5 minutes. The anchors
-# are those of the CL series (branch bce-series-v3, head d3a54df1365), which
+# are those of the CL series (branch bce-series-v4, head 66c008c0e4b), which
 # differs from the bce-loop-ideas prototype in a few places (MinLength's
 # DCHECK, no constant on the left of 32-bit or truncated additions).
 #

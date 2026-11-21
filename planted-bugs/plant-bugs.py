@@ -285,8 +285,9 @@ UNOBSERVABLE_MUTANTS = [
     # computed in the loop (unless it has the same canonical value as one
     # computed before it, which is then invariant).
     ('invariant-x',
-     '!Dominates(&graph_.Get(graph_.BlockOf(candidate.x_value)), forward)) {',
-     'false) {'),
+     'if (forward->GetCommonDominator(definition) != definition) continue;',
+     'if (false && forward->GetCommonDominator(definition) != definition) '
+     'continue;'),
     # CanonicalValue: the bitcast of any reference. Only observable with a
     # moving GC, between two bitcasts of the same reference used as
     # indices, which the tests do not generate. (The input is never
@@ -324,12 +325,8 @@ DCHECK_MUTANTS = [
      '  }\n'
      '  DCHECK(OffsetRange::IsValidRange(non_negative->lower(), range.upper()));\n'),
     ('invariant-x-dcheck',
-     '    if (!TryExtractI32Const(candidate.x_value).has_value() &&\n'
-     '        !Dominates(&graph_.Get(graph_.BlockOf(candidate.x_value)), forward)) {\n'
-     '      continue;\n'
-     '    }',
-     '    DCHECK(TryExtractI32Const(candidate.x_value).has_value() ||\n'
-     '           Dominates(&graph_.Get(graph_.BlockOf(candidate.x_value)), forward));'),
+     '      if (forward->GetCommonDominator(definition) != definition) continue;',
+     '      DCHECK(forward->GetCommonDominator(definition) == definition);'),
 ]
 
 BCE = ['--turboshaft-wasm-bounds-check-elimination',

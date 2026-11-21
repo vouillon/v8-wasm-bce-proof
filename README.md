@@ -3,7 +3,7 @@
 This is a Rocq (Coq 8.20) formalization of the soundness argument of the
 analysis in V8's Turboshaft Wasm bounds check elimination
 (`src/compiler/turboshaft/wasm-bounds-check-elimination-reducer.{h,cc}`),
-as of the CL series (branch `bce-series-v3`, commit `d3a54df1365`), whose
+as of the CL series (branch `bce-series-v4`, commit `66c008c0e4b`), whose
 comments state the conditions used here. It covers the
 part of the argument that is not arithmetic: why a fact recorded at a
 program point still holds at the later points where the analysis uses
@@ -514,6 +514,17 @@ machine: the reliable measure is the number of failing seeds over a
 fixed range of seeds, for a mutant built once. Some bugs remain rare:
 `small-bound-unsigned` and `coalesce-keeps-length` fail on 1 seed in
 240, `excluded-no-holds` and `merge-off-by-one` on about 1 in 100.
+
+These results were not measured again on `bce-series-v4`
+(`66c008c0e4b`). Its changes bound the cost of the loop rules (the
+walk of `EntryLowerBound` is limited in blocks as well as branches, the
+dominance test uses `GetCommonDominator`, and each phi of a header only
+scans the conditions that mention it), make `TryResolveMergeBound`
+reject 64-bit merges, and fix two crashes of the emission of fallback
+sequences in debug builds. The code of v4 is the same as v3's on the
+benchmarks (same code size for every function). Every edit of
+`plant-bugs.py` applies to v4; `invariant-x` and `invariant-x-dcheck`
+were rewritten for the new dominance test.
 
 The extension adds two shapes, each generated from a separate random
 sequence (`separately`), so that the other functions and statements are
