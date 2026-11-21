@@ -248,14 +248,14 @@ GUARD_MUTANTS = [
 # which the Z3 queries do not model.
 EMISSION_MUTANTS = [
     # A sequence is also emitted within the fallback code of another one,
-    # which removes its covered traps from the rest of the graph, including
+    # which removes its guarded traps from the rest of the graph, including
     # the fast path of the other sequence (see in_fallback_code_).
     ('emit-in-fallback-code', '    if (in_fallback_code_) return;\n', '',
      HEADER),
     ('fallback-mode-not-set',
      '    ScopedModification<bool> set_true(&in_fallback_code_, true);\n', '',
      HEADER),
-    # The fallback code lacks the last covered trap: when the guard fails
+    # The fallback code lacks the last guarded trap: when the guard fails
     # on its offset, the fallback code reaches its Unreachable.
     ('fallback-drops-last-trap',
      '    __ CloneAndInlineTrappingInstructions(seq.start_index(), '

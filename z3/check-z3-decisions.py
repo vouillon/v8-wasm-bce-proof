@@ -1,7 +1,7 @@
 # Usage: check-z3-decisions.py <v8 dir> [--from <name>]
 # With --from, the queries before the first one whose name contains
 # <name> are skipped. The whole check takes about 5 minutes. The anchors
-# are those of the CL series (branch bce-series-v4, head 4e74ff2b4e6), which
+# are those of the CL series (branch bce-series-v5, head 850baf5581d), which
 # differs from the bce-loop-ideas prototype in a few places (MinLength's
 # DCHECK, no constant on the left of 32-bit or truncated additions).
 #
@@ -617,7 +617,7 @@ def check_guards():
     # first trap, which is {x + index_offset}, and from the length of that
     # trap: this is what the invariant of sequences states (see
     # check_fallback_sequences), for the values of {x} and {l} at the start
-    # of the sequence, which are their values at its covered traps
+    # of the sequence, which are their values at its guarded traps
     # (Canonical.guard_value_persists).
     for base_valid, what in BASES:
         for single in [True, False]:
@@ -642,7 +642,7 @@ def check_guards():
                   [*st.facts(), valid_range(lo, hi), passes],
                   in_bounds_violated(offsets, x, l))
             # When the guard fails, one of the bounds of the range is out
-            # of bounds. These are offsets of covered traps, which are in
+            # of bounds. These are offsets of guarded traps, which are in
             # the fallback code: one of them traps before its Unreachable.
             prove(f'Failing guard: a bound is out of bounds ({what}, '
                   f'{bits}-bit)',
@@ -651,11 +651,11 @@ def check_guards():
 
 
 # Fallback sequences. Positions are those of the operations of the block
-# (and of its dominators, before it), in order. A sequence covers the
+# (and of its dominators, before it), in order. A sequence contains the
 # traps of a range of positions [start, end). Its fields are those of
 # FallbackInstructionSequence, with the positions where its index and its
 # length are defined, the positions where its known and non-negative
-# offsets were known, and the positions of the covered traps whose
+# offsets were known, and the positions of the guarded traps whose
 # offsets are the bounds of its range.
 class Seq:
     def __init__(self, name):
@@ -686,7 +686,7 @@ class Seq:
             valid_range(self.offsets.lo, self.offsets.hi),
             # The facts are those known at the start.
             self.known_at == self.start, self.nn_at == self.start,
-            # The bounds of the range are offsets of covered traps, which
+            # The bounds of the range are offsets of guarded traps, which
             # the fallback code checks when the guard fails.
             self.covers(self.lo_trap), self.covers(self.hi_trap)]
 
@@ -711,9 +711,9 @@ def coalesce(a, b):
     r.start = pick(a.start, b.start)
     r.end = b.end
     r.offsets = Opt.some(h.lo, h.hi)
-    # The covered traps are those of both sequences. The bound of the
+    # The guarded traps are those of both sequences. The bound of the
     # merged range must be a bound of one of the ranges (otherwise, no
-    # covered trap is known to have it: position {r.end}, outside).
+    # guarded trap is known to have it: position {r.end}, outside).
     bound_trap = lambda v, va, vb, ta, tb: If(v == va, ta, If(v == vb, tb, r.end))
     r.lo_trap = bound_trap(h.lo, a.offsets.lo, b.offsets.lo, a.lo_trap, b.lo_trap)
     r.hi_trap = bound_trap(h.hi, a.offsets.hi, b.offsets.hi, a.hi_trap, b.hi_trap)
@@ -755,7 +755,7 @@ def check_fallback_sequences():
         # The hull exists (W9).
         a, b = Seq('a'), Seq('b')
         r, present = coalesce(a, b)
-        # Any other covered trap of either sequence.
+        # Any other guarded trap of either sequence.
         ta, tb, oa, ob = fresh('a_trap'), fresh('b_trap'), fresh('oa'), fresh('ob')
         prove(f'Coalesce: invariant ({what})',
               [*a.invariant(base_valid, x, l), *b.invariant(base_valid, x, l),

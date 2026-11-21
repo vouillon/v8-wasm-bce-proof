@@ -3,7 +3,7 @@
 This is a Rocq (Coq 8.20) formalization of the soundness argument of the
 analysis in V8's Turboshaft Wasm bounds check elimination
 (`src/compiler/turboshaft/wasm-bounds-check-elimination-reducer.{h,cc}`),
-as of the CL series (branch `bce-series-v4`, commit `4e74ff2b4e6`), whose
+as of the CL series (branch `bce-series-v5`, commit `850baf5581d`), whose
 comments state the conditions used here. It covers the
 part of the argument that is not arithmetic: why a fact recorded at a
 program point still holds at the later points where the analysis uses
@@ -233,9 +233,9 @@ Milestone 1 with `p := def x`.
   variable had at `t0`.
 - `guard_value_persists`: the guard of a fallback sequence, at its start
   `p`, reads the base of the key through the index of the first trap,
-  defined before `p`. At each covered trap, later in the block, the base
+  defined before `p`. At each guarded trap, later in the block, the base
   has the same value. With `same_canonical_value` for the length, this is
-  why the guard checks the indices of the covered traps (the arithmetic
+  why the guard checks the indices of the guarded traps (the arithmetic
   is in `check_fallback_sequences`, see "Z3 checks").
 - `record_ssa_fact`: a condition on SSA values at the current point is a
   fact over their canonical terms.
@@ -451,14 +451,14 @@ Install the solver with `pip install -r requirements.txt` (in a venv).
   - the guard's index and length are defined before the start;
   - they are the index `x + index_offset` and the length `l` of a trap;
   - its known and non-negative offsets are those known at the start;
-  - the bounds of its range are offsets of covered traps;
-  - its covered traps lie between its start and its end.
+  - the bounds of its range are offsets of guarded traps;
+  - its guarded traps lie between its start and its end.
 
   `RecordFallbackSequence` establishes the invariant, and `Coalesce`
   (transcribed) preserves it. Given the invariant, the guard, built by
-  `GuardIndex` from the first index, implies that all the covered traps
+  `GuardIndex` from the first index, implies that all the guarded traps
   are within bounds. When the guard fails, a bound of the range, which
-  is a covered trap still present in the fallback code, is out of
+  is a guarded trap still present in the fallback code, is out of
   bounds, so the `Unreachable` at its end is never reached. The values
   `x` and `l` are those at the start, which are those at the covered
   traps (`guard_value_persists`). Each planted bug of the `guards` set,
@@ -503,7 +503,7 @@ changes. The sets:
 - `emission`: how the reducer emits fallback sequences, which the Z3
   queries do not model. The mutants are a sequence emitted within the
   fallback code of another (`in_fallback_code_`), fallback code without
-  its last covered trap, and guards accepting an index equal to the
+  its last guarded trap, and guards accepting an index equal to the
   length;
 - `unobservable`: bugs that no test can observe, each with the reason
   in `plant-bugs.py`. No other set includes them, so that they cost no
@@ -525,7 +525,8 @@ fixed range of seeds, for a mutant built once. Some bugs remain rare:
 240, `excluded-no-holds` and `merge-off-by-one` on about 1 in 100.
 
 These results were not measured again on `bce-series-v4`
-(`4e74ff2b4e6`). Its changes bound the cost of the loop rules (the walk
+(`4e74ff2b4e6`), nor on `bce-series-v5`, which only changes comments.
+The changes of v4 bound the cost of the loop rules (the walk
 of `EntryLowerBound` is limited in blocks as well as branches, the
 dominance test uses `GetCommonDominator`, and each phi of a header only
 scans the conditions that mention it), make `TryResolveMergeBound`
@@ -592,7 +593,7 @@ same. The guard moves to the start of the earlier sequence, before the
 later one's first trap. The extreme offsets of the merged range are
 those of traps after that later start, which extend the known range when
 they are checked, so they are not in the known range there. The extra
-facts from between the two starts come from covered traps or, for
+facts from between the two starts come from guarded traps or, for
 non-negative offsets (keyed by the base alone), from checks of other
 arrays. The latter are folded into the known range of each later check
 ([non-negative-and-check]), which makes the trap that would extend the

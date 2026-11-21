@@ -310,12 +310,12 @@ Qed.
     computes the indices it checks from the index [x] of its first trap,
     defined before [p], and so from the value at [p] of the base [tb] of
     the key, whose leaves are leaves of the canonical term of [x].  At a
-    covered trap, at time [k] (dominated by [p], without visiting [p]
+    guarded trap, at time [k] (dominated by [p], without visiting [p]
     again: later in the same block), the base has the same value, so
-    that the guard checks the indices of the covered traps
+    that the guard checks the indices of the guarded traps
     ([check_fallback_sequences] in z3/).  The same holds for the length,
     with [tb] the canonical term of the length of the first trap, which
-    is the one of the length of each covered trap ([same_canonical_value]). *)
+    is the one of the length of each guarded trap ([same_canonical_value]). *)
 Lemma guard_value_persists :
   forall p t0 k x t tb,
   k <= len e -> t0 <= k -> pts e t0 = p ->
