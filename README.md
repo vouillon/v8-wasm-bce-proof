@@ -3,7 +3,7 @@
 This is a Rocq (Coq 8.20) formalization of the soundness argument of the
 analysis in V8's Turboshaft Wasm bounds check elimination
 (`src/compiler/turboshaft/wasm-bounds-check-elimination-reducer.{h,cc}`),
-as of the CL series (branch `bce-series-v4`, commit `66c008c0e4b`), whose
+as of the CL series (branch `bce-series-v4`, commit `0ba564071db`), whose
 comments state the conditions used here. It covers the
 part of the argument that is not arithmetic: why a fact recorded at a
 program point still holds at the later points where the analysis uses
@@ -381,6 +381,15 @@ alias fact `Fa` has leaves `phi` and the leaves of `ty`, and holds when
   cycle would make `pure_sem` unsatisfiable, and the theorems vacuous.
   Turboshaft does not produce such graphs (each operation is its own
   point).
+- **Two properties of other phases are taken for granted.** Load
+  elimination's replacements are modeled as identities (`ident`): a
+  replacement is equal to the value it replaces and computed at a
+  dominator, which is the contract stated on
+  `WasmLoadEliminationAnalyzer::Replacement` and followed by
+  `ResolveReplacements`. The length of an allocation is an array length
+  because the allocation is kept until it is lowered, where its trap is
+  emitted, which a `static_assert` in `RecordKnownLength` checks
+  (`is_required_when_unused`).
 - **The transformation is not modeled.** The theorems are about the
   analysis on the input graph: every fact the analysis uses holds in every
   execution of that graph. Removing redundant traps, and the fallback
@@ -516,15 +525,16 @@ fixed range of seeds, for a mutant built once. Some bugs remain rare:
 240, `excluded-no-holds` and `merge-off-by-one` on about 1 in 100.
 
 These results were not measured again on `bce-series-v4`
-(`66c008c0e4b`). Its changes bound the cost of the loop rules (the
+(`0ba564071db`). Its changes bound the cost of the loop rules (the
 walk of `EntryLowerBound` is limited in blocks as well as branches, the
 dominance test uses `GetCommonDominator`, and each phi of a header only
 scans the conditions that mention it), make `TryResolveMergeBound`
 reject 64-bit merges, and fix two crashes of the emission of fallback
-sequences in debug builds. The code of v4 is the same as v3's on the
-benchmarks (same code size for every function). Every edit of
-`plant-bugs.py` applies to v4; `invariant-x` and `invariant-x-dcheck`
-were rewritten for the new dominance test.
+sequences in debug builds; it also states in the code the two
+assumptions on other phases listed above. The code of v4 is the same
+as v3's on the benchmarks (same code size for every function). Every
+edit of `plant-bugs.py` applies to v4; `invariant-x` and
+`invariant-x-dcheck` were rewritten for the new dominance test.
 
 The extension adds two shapes, each generated from a separate random
 sequence (`separately`), so that the other functions and statements are
