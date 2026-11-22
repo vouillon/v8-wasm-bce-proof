@@ -25,6 +25,9 @@
 # that applies them. To detect when the code changes, the script first
 # checks that the lines of code it transcribes are still in the source
 # (see ANCHORS): update the transcription when one of them is missing.
+# It then checks the hashes of the whole bodies of the transcribed
+# functions (see HASHES), which change with any edit of these functions,
+# including one that leaves every anchored line in place.
 #
 # Facts, for a base value {x} and an array of length {l} (l < 2^30):
 # - a range of offsets [lo, hi] within bounds: x + k <u l for all k in
@@ -235,6 +238,125 @@ def check_anchors():
             if ''.join(anchor.split()) not in text:
                 print(f'MISSING in .{ext}: {anchor}')
                 ok = False
+    return ok
+
+
+# The transcribed functions, whose whole bodies (without comments and
+# whitespace) are hashed: line anchors do not see a reordering of
+# statements, a new early return, or a changed condition around an
+# anchored line. When a hash changes, review the transcription of that
+# function, then update HASHES (--print-hashes prints the current ones).
+TRANSCRIBED = {
+    'h': ['IsValidRange', 'Classify', 'Hull', 'ComputeGuard',
+          'ImpliesLowerBound', 'ImpliesUpperBound', 'IsProfitable',
+          'CanCoalesce', 'Coalesce', 'EmitTwoSidedBoundsCheck',
+          'EmitBoundsCheck', 'GuardIndex'],
+    'cc': ['ProcessComparison', 'ProcessNotEqual', 'ProcessBoundsCheck',
+           'ExtendDownToNonNegative', 'KnownOffsets', 'NonNegativeOffsets',
+           'IsKnownNonNegative', 'RecordNonNegativeOffset', 'MinLength',
+           'RecordMinLength', 'TryExtractArrayLength',
+           'IsArrayLengthWithoutWrapAround', 'TryExtractNonNegativeIndex',
+           'TryMatchInductionVariable', 'IsSmallBound', 'FindNotEqualBound',
+           'EntryLowerBound', 'RecordLoopBound', 'TryResolveMergeBound',
+           'TryExtractBoundsCheckCondition', 'ProcessNotEqualToConstant',
+           'ProcessDecreasingInduction', 'HasDecreasingLowerBound',
+           'EntryLowerBoundOfStart', 'DecomposeIndex', 'Normalize',
+           'ForEachCondition', 'UpdateKnownBoundsChecks',
+           'RecordFallbackSequence'],
+}
+HASHES = {
+    'h:IsValidRange': '443ebb681ce0',
+    'h:Classify': 'de9936bc3eaa',
+    'h:Hull': 'd419265bc614',
+    'h:ComputeGuard': '94f157bed70a',
+    'h:ImpliesLowerBound': 'e905665dc66c',
+    'h:ImpliesUpperBound': 'e2d80e583700',
+    'h:IsProfitable': 'f20042f8ac69',
+    'h:CanCoalesce': 'd83e12f5e381',
+    'h:Coalesce': '963ee203729a',
+    'h:EmitTwoSidedBoundsCheck': '9d5e2d162052',
+    'h:EmitBoundsCheck': 'bf454579687f',
+    'h:GuardIndex': 'd485a5c9a24b',
+    'cc:ProcessComparison': '3de7e4eb8379',
+    'cc:ProcessNotEqual': '2bde72c92114',
+    'cc:ProcessBoundsCheck': '5b9c4d601957',
+    'cc:ExtendDownToNonNegative': 'e095e4dc684d',
+    'cc:KnownOffsets': '57817d665d1b',
+    'cc:NonNegativeOffsets': '1edf58051fd2',
+    'cc:IsKnownNonNegative': 'f6e4b2693605',
+    'cc:RecordNonNegativeOffset': '478a8df56ef4',
+    'cc:MinLength': 'ada22800db9c',
+    'cc:RecordMinLength': 'c9ebda874e2e',
+    'cc:TryExtractArrayLength': '04f4672e1da0',
+    'cc:IsArrayLengthWithoutWrapAround': 'f9b6f370976d',
+    'cc:TryExtractNonNegativeIndex': '1526e12408cc',
+    'cc:TryMatchInductionVariable': 'e5134607d0a6',
+    'cc:IsSmallBound': '2f95478b8fcb',
+    'cc:FindNotEqualBound': '911d1eee4409',
+    'cc:EntryLowerBound': 'ba9d8f18f1fa',
+    'cc:RecordLoopBound': '0e56d282b53c',
+    'cc:TryResolveMergeBound': 'f26c14917228',
+    'cc:TryExtractBoundsCheckCondition': 'f4aa453a1d57',
+    'cc:ProcessNotEqualToConstant': '70073fcc3ace',
+    'cc:ProcessDecreasingInduction': '6b139fd24450',
+    'cc:HasDecreasingLowerBound': '3c48328aa4bb',
+    'cc:EntryLowerBoundOfStart': '057ec81e00d5',
+    'cc:DecomposeIndex': 'e164a8b81460',
+    'cc:Normalize': '6f8d038d886d',
+    'cc:ForEachCondition': 'e6eaf518b86e',
+    'cc:UpdateKnownBoundsChecks': '95808d8ade58',
+    'cc:RecordFallbackSequence': '4d2359006f85',
+}
+
+
+def function_bodies(text, name):
+    """The bodies of the definitions of {name} in {text}: a parameter list
+    followed (after qualifiers such as const) by a brace, which tells a
+    definition from a declaration or a call."""
+    code = re.sub(r'//[^\n]*', '', re.sub(r'/\*.*?\*/', '', text, flags=re.S))
+    bodies = []
+    for m in re.finditer(r'(?<![\w.>~])(?:\w+::)*' + name + r'\s*\(', code):
+        i, depth = m.end(), 1
+        while depth:
+            depth += {'(': 1, ')': -1}.get(code[i], 0)
+            i += 1
+        q = re.match(r'(\s|const\b|noexcept\b|override\b)*', code[i:])
+        i += q.end()
+        if i >= len(code) or code[i] != '{':
+            continue
+        start, depth = i, 0
+        while True:
+            depth += {'{': 1, '}': -1}.get(code[i], 0)
+            i += 1
+            if depth == 0:
+                break
+        bodies.append(''.join(code[start:i].split()))
+    return bodies
+
+
+def current_hashes():
+    import hashlib
+    hashes = {}
+    for ext, names in TRANSCRIBED.items():
+        text = open(os.path.join(V8, f'{SRC}.{ext}')).read()
+        for name in names:
+            bodies = function_bodies(text, name)
+            hashes[f'{ext}:{name}'] = (
+                hashlib.sha256('\n'.join(bodies).encode()).hexdigest()[:12]
+                if bodies else None)
+    return hashes
+
+
+def check_hashes():
+    ok = True
+    for key, value in current_hashes().items():
+        if value is None:
+            print(f'NOT FOUND: the definition of {key}')
+            ok = False
+        elif HASHES.get(key) != value:
+            print(f'CHANGED: {key}: review its transcription, then update '
+                  'HASHES')
+            ok = False
     return ok
 
 
@@ -1208,9 +1330,48 @@ def check_narrowing():
     prove('Reading: trunc(Y - c)', [], low(Y - c) != low(Y) - low(c))
 
 
+def check_conditions():
+    # ForEachCondition: {a | b} does not hold (is 0) when neither part
+    # holds, {a & b} holds (is not 0) when both parts hold, and {a == 0}
+    # holds when {a} does not (and does not hold when {a} does). A part
+    # that holds is not 0, which for a comparison (0 or 1) means that the
+    # comparison holds.
+    a, b = fresh('a'), fresh('b')
+    prove('ForEachCondition: a | b does not hold', [(a | b) == 0],
+          Not(And(a == 0, b == 0)))
+    prove('ForEachCondition: a & b holds', [(a & b) != 0],
+          Not(And(a != 0, b != 0)))
+    prove('ForEachCondition: a == 0 holds', [If(a == 0, bv(1), bv(0)) != 0],
+          a != 0)
+    prove('ForEachCondition: a == 0 does not hold',
+          [If(a == 0, bv(1), bv(0)) == 0], a == 0)
+    prove('ForEachCondition: a comparison that is not 0 holds',
+          [Or(a == 0, a == 1), a != 0], a != 1)
+    # Normalize: a comparison that does not hold, read as a relation that
+    # holds: {!(x < y)} is {y <= x}, {!(x <= y)} is {y < x}, signed or
+    # unsigned, on 32 or 64 bits, and {!(x == y)} is {x != y}.
+    for width in [32, 64]:
+        x, y = fresh('x', width), fresh('y', width)
+        for name, holds_not, relation in [
+                ('x <s y', Not(x < y), y <= x),
+                ('x <=s y', Not(x <= y), y < x),
+                ('x <u y', Not(ULT(x, y)), ULE(y, x)),
+                ('x <=u y', Not(ULE(x, y)), ULT(y, x)),
+                ('x == y', Not(x == y), x != y)]:
+            prove(f'Normalize: !({name}), {width} bits', [holds_not],
+                  Not(relation))
+
+
 def main():
+    if '--print-hashes' in sys.argv:
+        for key, value in current_hashes().items():
+            print(f"    '{key}': '{value}',")
+        return
     if not check_anchors():
         print('The source changed: update the transcriptions.')
+        sys.exit(1)
+    if not check_hashes():
+        print('A transcribed function changed: review its transcription.')
         sys.exit(1)
     if not check_inventory():
         sys.exit(1)
@@ -1230,6 +1391,7 @@ def main():
     check_decreasing_induction()
     check_truncated_addition()
     check_narrowing()
+    check_conditions()
     failed = results.count(False)
     print(f'{len(results) - failed}/{len(results)} queries proved')
     sys.exit(1 if failed else 0)

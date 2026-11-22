@@ -414,7 +414,8 @@ already ended.
   They correspond to the Z3 lemmas and to the decisions of the analysis
   (which candidates it accepts), which are not modeled.
 - **The analysis algorithm is not modeled.** There are no snapshot
-  tables, `OffsetRange` hulls or `ForEachCondition`. The tables are
+  tables, `OffsetRange` hulls or `ForEachCondition` (whose splitting of
+  conditions Z3 checks, see "Z3 checks"). The tables are
   modeled by `A` (facts recorded at dominators). It is assumed, not proved
   from the code, that the facts the analysis uses at a point are among
   those recorded at its dominators. The `BeginBlock` comment argues this.
@@ -504,8 +505,12 @@ Install the solver with `pip install -r requirements.txt` (in a venv).
   applies the lemmas. The decision functions of the analysis are
   transcribed as z3py functions over 32-bit bitvectors. It first checks
   that the transcribed lines are still in the source (anchors, ignoring
-  whitespace), and stops if one is missing. About 5 minutes (z3-solver
-  5.1). It checks:
+  whitespace), and stops if one is missing. It then compares hashes of
+  the whole bodies of the transcribed functions, without comments and
+  whitespace, and stops if one changed, so that any edit of these
+  functions (a reordered statement, a new early return) leads to a review
+  of the transcription (`--print-hashes` prints the new ones). About 5
+  minutes (z3-solver 5.1). It checks:
   - **soundness**: from facts that hold and a condition that holds, the
     facts the code records hold, and a check found redundant cannot fail;
   - **well-formedness** (W1-W8): whatever the facts, the ranges the code
@@ -515,7 +520,10 @@ Install the solver with `pip install -r requirements.txt` (in a venv).
     `ArrayLength` replaced by load elimination with any constant;
   - **refutations**: counterexamples showing why the code excludes a case
     (narrowing a negated or signed comparison, a constant length key of
-    2^30 or more in `MinLength`).
+    2^30 or more in `MinLength`);
+  - **conditions**: how `ForEachCondition` splits `|`, `&` and `== 0`,
+    and the table by which `Normalize` reads a comparison that does not
+    hold (signed and unsigned, 32 and 64 bits).
 
   W9 covers the DCHECK in `CanCoalesce`: within a block, the offsets of
   each sequence are within the known range of its key, which only grows,
