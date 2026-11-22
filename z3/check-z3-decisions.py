@@ -1,7 +1,7 @@
 # Usage: check-z3-decisions.py <v8 dir> [--from <name>]
 # With --from, the queries before the first one whose name contains
 # <name> are skipped. The whole check takes about 5 minutes. The anchors
-# are those of the CL series (branch bce-series-v6, head e0e87c426ea), which
+# are those of the CL series (branch bce-series-v6, head a496aee2b91), which
 # differs from the bce-loop-ideas prototype in a few places (MinLength's
 # DCHECK, no constant on the left of truncated additions).
 #
@@ -262,7 +262,8 @@ TRANSCRIBED = {
            'ProcessDecreasingInduction', 'HasDecreasingLowerBound',
            'EntryLowerBoundOfStart', 'DecomposeIndex', 'Normalize',
            'ForEachCondition', 'UpdateKnownBoundsChecks',
-           'RecordFallbackSequence'],
+           'RecordFallbackSequence', 'HasSmallBound', 'ProcessLoopHeader',
+           'ProcessCondition'],
 }
 HASHES = {
     'h:IsValidRange': '443ebb681ce0',
@@ -306,6 +307,9 @@ HASHES = {
     'cc:ForEachCondition': 'e6eaf518b86e',
     'cc:UpdateKnownBoundsChecks': '95808d8ade58',
     'cc:RecordFallbackSequence': '4d2359006f85',
+    'cc:HasSmallBound': '2faf0074b31f',
+    'cc:ProcessLoopHeader': 'f4ec9b92904a',
+    'cc:ProcessCondition': 'd60448257a76',
 }
 
 
