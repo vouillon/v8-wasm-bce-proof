@@ -1,17 +1,16 @@
 # Usage: check-normalization.py <v8 dir> [<d8>]
 #
-# Checks that the default pipeline moves constants to the right of
-# additions before bounds check elimination, which only reads {x + c}:
-# after {a[i]}, the check of {a[1 + i]} must extend the known offsets of
-# {i} to [0, 1], as for {a[i + 1]}. The normalization comes from loop
-# peeling (its machine optimizations run on every function), so this
-# fails if the pipeline changes. No V8 test can check it: unit tests do
-# not run the pipeline, and mjsunit tests only see results.
+# Checks that after {a[i]}, the check of {a[1 + i]} extends the known
+# offsets of {i} to [0, 1], as for {a[i + 1]}, in the default pipeline.
+# Bounds check elimination reads a constant on either side of a 32-bit
+# addition (since bce-series-v4), and the machine optimizations run by
+# loop peeling usually move it to the right before. No V8 test can check
+# it in the pipeline: unit tests do not run the pipeline, and mjsunit
+# tests only see results.
 #
 # Needs a debug (or optdebug) d8, for the trace flag (default:
-# <v8 dir>/out/x64.optdebug/d8). With --no-wasm-loop-peeling, the check of
-# {a[1 + i]} is not recognized (precision only), which is reported for
-# information.
+# <v8 dir>/out/x64.optdebug/d8). The result with --no-wasm-loop-peeling
+# is reported for information.
 import os, re, subprocess, sys, tempfile
 
 if len(sys.argv) < 2:

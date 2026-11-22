@@ -3,7 +3,7 @@
 This is a Rocq (Coq 8.20) formalization of the soundness argument of
 V8's Turboshaft Wasm bounds check elimination
 (`src/compiler/turboshaft/wasm-bounds-check-elimination-reducer.{h,cc}`),
-as of the CL series (branch `bce-series-v5`, commit `850baf5581d`), whose
+as of the CL series (branch `bce-series-v6`, commit `e0e87c426ea`), whose
 comments state the conditions used here. It covers the
 part of the argument that is not arithmetic: why a fact recorded at a
 program point still holds at the later points where the analysis uses
@@ -474,6 +474,18 @@ already ended.
   and `comm_rep`: `WordBinop` and
   `Shift` include `rep`, the right side of a shift being 32-bit, `Change`
   and `TaggedBitcast` include their source and target representations).
+- **Debug checks of the hypotheses on the graph.** Since `bce-series-v6`,
+  debug builds check some of what the model assumes of the code and of
+  other phases: `static_assert`s that the enumerations packed into the
+  options of structural keys fit in their 8-bit fields (`op_rep`), and
+  DCHECKs that load elimination's replacements keep the representation
+  of the value they replace and dominate it (`ident_rep`, and the
+  contract of `Replacement`), that the values given to `TruncationKey` and
+  their canonical values are 64-bit, that a loop header is not the entry
+  and dominates its back edge (`Loops.v`), that the merge of a length
+  alias dominates the loop entry and none of its own predecessors
+  (`Alias.v`), and that the guarded traps of a fallback sequence are
+  bounds checks within it, which the analysis did not remove.
 
   `existing_truncation` covers one step of `DecomposeIndex` through an
   existing truncation. Its chain of decompositions applies it at each
@@ -589,8 +601,8 @@ fixed range of seeds, for a mutant built once. Some bugs remain rare:
 240, `excluded-no-holds` and `merge-off-by-one` on about 1 in 100.
 
 These results were not measured again on `bce-series-v4`
-(`4e74ff2b4e6`), nor on `bce-series-v5`, which only changes comments.
-The changes of v4 bound the cost of the loop rules (the walk
+(`4e74ff2b4e6`), `bce-series-v5` (which only changes comments) or
+`bce-series-v6`. The changes of v4 bound the cost of the loop rules (the walk
 of `EntryLowerBound` is limited in blocks as well as branches, the
 dominance test uses `GetCommonDominator`, and each phi of a header only
 scans the conditions that mention it), make `TryResolveMergeBound`
@@ -610,6 +622,19 @@ traps of the analysis. Compiled code differs from v3's in 43 of about
 and j2cl-box2d), all of them smaller. Every edit of `plant-bugs.py`
 applies to v4; `invariant-x` and `invariant-x-dcheck` were rewritten for
 the new dominance test.
+
+v6 fixes three precision bugs found by an external review (a known
+length plus a constant in `TryExtractArrayLength`, offsets inside the
+known offsets in `IsKnownNonNegative`, the operation chosen for a
+not-equal bound in `FindNotEqualBound`), adds debug checks of the
+hypotheses on the graph (see "Assumptions"), and aborts with the
+verifier at the end of fallback code. Compiled code is the same as v5's
+for all the functions of the benchmarks. `invariant-x`,
+`invariant-x-dcheck` and `truncation-placeholder` were rewritten for the
+changed code, with the same mutations; the planted-bug measurements
+were not run again. With `fallback-drops-last-trap` planted, the
+positions test now stops at the verifier's abort at the end of the
+fallback code.
 
 The extension adds two shapes, each generated from a separate random
 sequence (`separately`), so that the other functions and statements are
@@ -667,12 +692,13 @@ invariant, which is stronger than what the guard needs.
 
 ## Probes (`probes/`)
 
-`check-normalization.py <v8 dir> [<d8>]` checks that the default
-pipeline moves constants to the right of additions before the analysis,
-which only reads `x + c` (the CL series dropped `c + x`). After `a[i]`, the
-check of `a[1 + i]` must be recognized like `a[i + 1]`. The normalization
-comes from loop peeling, so with `--no-wasm-loop-peeling` the analysis
-loses precision on `c + x` (reported for information). It needs a debug
+`check-normalization.py <v8 dir> [<d8>]` checks that after `a[i]`, the
+check of `a[1 + i]` is recognized like `a[i + 1]`. The analysis reads a
+constant on either side of a 32-bit addition, and the default pipeline
+usually moves constants to the right before it (the machine
+optimizations run by loop peeling); the probe also reports, for
+information, the result with `--no-wasm-loop-peeling` (since
+`bce-series-v4`, recognized as well). It needs a debug
 or optdebug `d8`, for the trace flag. No V8 test can check this: the unit
 tests do not run the pipeline, and mjsunit tests only see results.
 

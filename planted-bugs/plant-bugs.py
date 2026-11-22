@@ -197,8 +197,7 @@ NARROWING_MUTANTS = [
     # The value standing for {trunc(X)} is used as a truncation (and so
     # as an index, possibly by a guard).
     ('truncation-placeholder',
-     '  OpIndex canonical = CanonicalValue(x);\n  return values_by_structure_',
-     '  OpIndex canonical = CanonicalValue(x);\n'
+     '  return values_by_structure_',
      '  truncations_.emplace(canonical, canonical);\n'
      '  return values_by_structure_'),
     # The {wide} flag is not passed for the left side of a narrowed
@@ -285,9 +284,8 @@ UNOBSERVABLE_MUTANTS = [
     # computed in the loop (unless it has the same canonical value as one
     # computed before it, which is then invariant).
     ('invariant-x',
-     'if (forward->GetCommonDominator(definition) != definition) continue;',
-     'if (false && forward->GetCommonDominator(definition) != definition) '
-     'continue;'),
+     'if (!candidate.before_loop) continue;',
+     'if (false && !candidate.before_loop) continue;'),
     # CanonicalValue: the bitcast of any reference. Only observable with a
     # moving GC, between two bitcasts of the same reference used as
     # indices, which the tests do not generate. (The input is never
@@ -325,8 +323,8 @@ DCHECK_MUTANTS = [
      '  }\n'
      '  DCHECK(OffsetRange::IsValidRange(non_negative->lower(), range.upper()));\n'),
     ('invariant-x-dcheck',
-     '      if (forward->GetCommonDominator(definition) != definition) continue;',
-     '      DCHECK(forward->GetCommonDominator(definition) == definition);'),
+     '    if (!candidate.before_loop) continue;',
+     '    DCHECK(candidate.before_loop);'),
 ]
 
 BCE = ['--turboshaft-wasm-bounds-check-elimination',

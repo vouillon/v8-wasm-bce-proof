@@ -1,9 +1,9 @@
 # Usage: check-z3-decisions.py <v8 dir> [--from <name>]
 # With --from, the queries before the first one whose name contains
 # <name> are skipped. The whole check takes about 5 minutes. The anchors
-# are those of the CL series (branch bce-series-v5, head 850baf5581d), which
+# are those of the CL series (branch bce-series-v6, head e0e87c426ea), which
 # differs from the bce-loop-ideas prototype in a few places (MinLength's
-# DCHECK, no constant on the left of 32-bit or truncated additions).
+# DCHECK, no constant on the left of truncated additions).
 #
 # Checks with Z3 that the decision functions of Wasm bounds check
 # elimination keep its facts sound. The functions are transcribed below
@@ -118,12 +118,13 @@ ANCHORS = {
         # IsKnownNonNegative, RecordNonNegativeOffset, RecordMinLength
         'if (non_negative.has_value() && non_negative->Contains(offset)) '
         'return true;',
-        'return known.has_value() && offset - known->upper() <= kMaxArrayLength;',
+        'return known.has_value() && (known->Contains(offset) || '
+        'offset - known->upper() <= kMaxArrayLength);',
         '? known->Hull(OffsetRange(offset))',
         'if (min_length > kMaxInt) return;',
         # TryExtractArrayLength, IsArrayLengthWithoutWrapAround
         'uint32_t reduction = 0u - b.offset;',
-        'if (reduction > kMaxReduction) return std::nullopt;',
+        'if (reduction <= kMaxReduction) {',
         '(array_length->reduction == 0 || '
         'MinLength(LengthKey(array_length->length)) >= '
         'array_length->reduction);',
@@ -358,7 +359,8 @@ def is_known_non_negative(base_valid, known, non_negative, offset):
         return contains(constant_non_negative(), offset)
     return Or(contains(non_negative, offset),
               And(known.present,
-                  ULE(offset - known.hi, bv(K_MAX_ARRAY_LENGTH))))
+                  Or(contains(known, offset),
+                     ULE(offset - known.hi, bv(K_MAX_ARRAY_LENGTH)))))
 
 
 # Facts.
@@ -1127,7 +1129,13 @@ def check_min_length_keys():
 # DecomposeIndex reads (structural, no query needed). bce-series-v2
 # removed two DCHECKs on base values, and added one on the representation
 # of a trap's index and one in the cast case of CanonicalValue
-# (structural), and one in CanCoalesce (W9). The .h counts of calls are
+# (structural), and one in CanCoalesce (W9). bce-series-v6 added
+# structural ones, on graph properties that the Rocq model assumes, none
+# on the values these queries cover: two on the phis given to the
+# induction rules, two on the representations of truncation keys, three
+# on load elimination replacements (representation and dominance), two
+# on loop headers, two on the merge of a length alias, and four on the
+# guarded traps of a fallback sequence (.h). The .h counts of calls are
 # declarations.
 INVENTORY_PATTERNS = {
     'OffsetRange': r'OffsetRange[ (]',
@@ -1136,9 +1144,9 @@ INVENTORY_PATTERNS = {
     'LengthKey calls': r'(?<![A-Za-z:])LengthKey\(',
 }
 INVENTORY = {
-    'h': {'OffsetRange': 7, 'DCHECK': 11, 'MinLength calls': 1,
+    'h': {'OffsetRange': 7, 'DCHECK': 15, 'MinLength calls': 1,
           'LengthKey calls': 1},
-    'cc': {'OffsetRange': 11, 'DCHECK': 17, 'MinLength calls': 6,
+    'cc': {'OffsetRange': 11, 'DCHECK': 28, 'MinLength calls': 6,
            'LengthKey calls': 8},
 }
 
