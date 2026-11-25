@@ -5,7 +5,9 @@
 # - the C++ identifiers they cite, in [...] in the comments of the .v
 #   files and in `...` in the README: CamelCase names (CanonicalValue),
 #   members (known_bounds_checks_), and qualified names, other than the
-#   names the .v files define;
+#   names the .v files define (a name may also be that of a unit test,
+#   in test/unittests/compiler/turboshaft/wasm-bounds-check-elimination-
+#   reducer-unittest.cc);
 # - the names of the Z3 lemmas they cite ([induction-constant], in the
 #   comments of the .v files and in the README), which must be defined in
 #   the comments of the header;
@@ -26,6 +28,9 @@ NOT_CPP_QUOTES = ['Formal verification of an SSA-based middle-end for CompCert']
 
 source = ''.join(open(os.path.join(sys.argv[1], f'{SRC}.{ext}')).read()
                  for ext in ['h', 'cc'])
+TESTS = ('test/unittests/compiler/turboshaft/'
+         'wasm-bounds-check-elimination-reducer-unittest.cc')
+tests = open(os.path.join(sys.argv[1], TESTS)).read()
 # The text of the comments, without markers, with whitespace collapsed.
 comments = ' '.join(m.group(1) for m in re.finditer(r'//+ ?(.*)', source))
 comments = ' '.join(comments.split())
@@ -91,7 +96,7 @@ for f, line, c in cited:
         for n in CPP_NAME.findall(part):
             if n in coq_names: continue
             names_checked.add(n)
-            if n not in source:
+            if n not in source and n not in tests:
                 missing.append(f'{f}:{line}: {n}')
 
 # Quotes of C++ comments.

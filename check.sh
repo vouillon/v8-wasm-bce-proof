@@ -10,6 +10,7 @@
 #   default python3, which needs z3-solver, see requirements.txt).
 # Runs them all, and exits with a non-zero status if one fails.
 SRC=src/compiler/turboshaft/wasm-bounds-check-elimination-reducer
+TESTS=test/unittests/compiler/turboshaft/wasm-bounds-check-elimination-reducer-unittest.cc
 PYTHON=${PYTHON:-python3}
 HERE=$(cd "$(dirname "$0")" && pwd)
 
@@ -25,6 +26,9 @@ if [ -n "$2" ]; then
   for ext in h cc; do
     git -C "$v8" show "$2:$SRC.$ext" > "$tmp/$SRC.$ext" || exit 2
   done
+  # The unit tests, whose names the README may cite.
+  mkdir -p "$tmp/$(dirname $TESTS)"
+  git -C "$v8" show "$2:$TESTS" > "$tmp/$TESTS" || exit 2
   v8=$tmp
 fi
 

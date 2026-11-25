@@ -3,7 +3,7 @@
 This is a Rocq (Coq 8.20) formalization of the soundness argument of
 V8's Turboshaft Wasm bounds check elimination
 (`src/compiler/turboshaft/wasm-bounds-check-elimination-reducer.{h,cc}`),
-as of the CL series (branch `bce-series-v6`, commit `a496aee2b91`), whose
+as of the CL series (branch `bce-series-v7`, commit `e15bcff93d5`), whose
 comments state the conditions used here. It covers the
 part of the argument that is not arithmetic: why a fact recorded at a
 program point still holds at the later points where the analysis uses
@@ -23,7 +23,8 @@ Build with `make` (it calls `coq_makefile`). `make assumptions` prints the
 axioms the main theorems depend on. Only the standard library is used.
 `make anchors V8_DIR=<v8 dir>` (`check-model-anchors.py`) checks that what
 the model and this README cite from the C++ code (identifiers, Z3 lemma
-names, quoted comments) is still in the source, at the commit above.
+names, quoted comments) is still in the source, at the commit above (a
+cited name may also be that of a unit test of the reducer).
 
 `make check V8_DIR=<v8 dir> [V8_COMMIT=<commit>]` (`check.sh`) runs all
 the checks against the reducer of a V8 checkout, or against the reducer
@@ -609,8 +610,8 @@ fixed range of seeds, for a mutant built once. Some bugs remain rare:
 240, `excluded-no-holds` and `merge-off-by-one` on about 1 in 100.
 
 These results were not measured again on `bce-series-v4`
-(`4e74ff2b4e6`), `bce-series-v5` (which only changes comments) or
-`bce-series-v6`. The changes of v4 bound the cost of the loop rules (the walk
+(`4e74ff2b4e6`) or `bce-series-v5` (which only changes comments); see
+below for v6 and v7. The changes of v4 bound the cost of the loop rules (the walk
 of `EntryLowerBound` is limited in blocks as well as branches, the
 dominance test uses `GetCommonDominator`, and each phi of a header only
 scans the conditions that mention it), make `TryResolveMergeBound`
@@ -639,10 +640,34 @@ hypotheses on the graph (see "Assumptions"), and aborts with the
 verifier at the end of fallback code. Compiled code is the same as v5's
 for all the functions of the benchmarks. `invariant-x`,
 `invariant-x-dcheck` and `truncation-placeholder` were rewritten for the
-changed code, with the same mutations; the planted-bug measurements
-were not run again. With `fallback-drops-last-trap` planted, the
-positions test now stops at the verifier's abort at the end of the
-fallback code.
+changed code, with the same mutations. With `fallback-drops-last-trap`
+planted, the positions test now stops at the verifier's abort at the end
+of the fallback code.
+
+Results on v6 (`a496aee2b91`), November 2026, each finding checked
+against the baseline: 44 of the 47 observable planted bugs are found
+within the 4-minute budget, and `bounds-check-elimination.js` finds 16
+of them. All three `dchecks` mutants fail, including
+`invariant-x-dcheck` on the test of v6 that the operation for a
+not-equal bound is computed before the loop. Over seeds 1 to 400,
+`merge-off-by-one` fails on 3 seeds, as rare as on v3, and
+`struct-get-structural` on none, even with load elimination disabled on
+every seed (the seed that found it on v3 still does).
+`wide-dropped-small-bound` was not observable any more: since v4, a phi
+of a loop header only scans the conditions that mention it, so
+`HasSmallBound` only sees a narrowed condition on the induction variable
+itself, which neither the random test nor the unit tests had.
+
+v7 (`e15bcff93d5`) only adds tests for these two. The unit test
+`StructLoadsNotShared` (two loads of a struct field with a write between
+them) fails with `struct-get-structural`. The unit test
+`LoopWithNarrowedLengthBound` (a loop exit `zext(k) <u zext(a.length)`)
+fails with `wide-dropped-small-bound`, by the DCHECK of `DecomposeIndex`
+in debug builds and by the check left in release builds. The random test
+makes the exit test of `while` loops a 64-bit comparison of zero-extended
+values in a quarter of them, drawn separately: `wide-dropped-small-bound`
+then fails on 30 of seeds 1 to 200, and the `narrowing` set rerun on v7
+finds all 7 bugs, this one in 3 seconds.
 
 The extension adds two shapes, each generated from a separate random
 sequence (`separately`), so that the other functions and statements are
